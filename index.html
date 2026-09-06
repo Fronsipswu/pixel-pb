@@ -67,7 +67,13 @@
             border: 1px solid light-dark(var(--offwhite), var(--less-dark-grey));
             padding: 3px;
             font-size: 14px;
-            
+
+        }
+        .confmask {
+            font-size: 12px;
+            word-break: break-all;
+            min-width: 60px;
+            text-align: center;
         }
         .combo-table {
             
@@ -381,7 +387,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <input type="file" title="Load a .binarypb uecapability file from a Pixel, or a Magisk zip containing one" id="fileInput" accept=".binarypb,.zip" />
+            <input type="file" title="Load a NR or LTE .binarypb uecapability file from a Pixel, or a Magisk zip containing one" id="fileInput" accept=".binarypb,.zip" />
             <div id="bandFilter" style="display: none;">
                 <input type="text" id="bandFilterInput" placeholder="Filter e.g., 1+3+7c+n78c">
                 <button onclick="bandFilter=''; bandFilterInput.value=''; generateTable(decodedData);">Clear</button>
@@ -589,6 +595,33 @@
         const root = protobuf.parse(protoDefinition).root;
         const UeCaps = root.lookupType("uecaps");
 
+        // LTE (ShannonLteUECap) proto definition
+        const lteProtoDefinition = `
+            syntax = "proto2";
+
+            message LteComponent {
+              required int32 band = 1;
+              required int32 bwClassMimoDl = 2;
+              required int32 bwClassMimoUl = 3;
+            }
+
+            message LteCombo {
+              repeated LteComponent components = 1;
+              optional uint32 bcs = 2;
+              required uint64 configMaskLow = 3;
+              required uint32 configMaskHigh = 4;
+            }
+
+            message LteUeCaps {
+              required uint32 version = 1;
+              repeated LteCombo combos = 2;
+              required uint32 bitmask = 3;
+            }
+        `;
+
+        const lteRoot = protobuf.parse(lteProtoDefinition).root;
+        const UeCapsLte = lteRoot.lookupType("LteUeCaps");
+
         // Proto helper functions
         function decodeBase64ToBytes(base64Str) {
             const binaryString = atob(base64Str);
@@ -758,6 +791,11 @@
         }
 
         function generateTable(decodedData) {
+            if (currentMode === "lte") {
+                generateLteTable(decodedData);
+                return;
+            }
+
             filteredGroups = applyBandFilter(decodedData.ComboGroups);
             let totalRows = filteredGroups.length;
             let totalPages = rowsPerPage === Infinity
@@ -941,6 +979,7 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("bandFilter").style.display = "block";
+            document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3+7c+n78c";
             document.getElementById("pageSizeSelector").style.display = "block";
         }
 
@@ -996,6 +1035,302 @@
             }
             decodedData.ComboGroups[realGroupIndex].comboHeader[field] = numValue;
             console.log(`Updated ${field} to ${numValue} for group ${realGroupIndex}`);
+        }
+
+        // ------------------------------------------------------------------
+        // LTE (ShannonLteUECap) support
+        // ------------------------------------------------------------------
+
+        const LTE_CLASS_LETTERS = {
+            32768: "A",
+            16384: "B",
+            8192: "C",
+            4096: "D",
+            2048: "E",
+            1024: "F",
+        };
+
+        const LTE_DL_CLASS_OPTIONS = [
+            ["32768", "A"],
+            ["16384", "B"],
+            ["8192", "C"],
+            ["4096", "D"],
+            ["2048", "E"],
+            ["1024", "F"],
+        ];
+
+        const LTE_UL_CLASS_OPTIONS = [
+            ["0", "None"],
+            ["32768", "A"],
+            ["8192", "C"],
+            ["4096", "D"],
+        ];
+
+        function lteClassLetter(value) {
+            return LTE_CLASS_LETTERS[value & ~1] || "?";
+        }
+
+        function lteComboSummary(combo) {
+            const part = (component, field) => {
+                const value = Number(component[field]) || 0;
+                if (value === 0) return null;
+                const letter = lteClassLetter(value);
+                return letter === "A"
+                    ? `${component.band}`
+                    : `${component.band}${letter}`;
+            };
+            const dl = combo.components
+                .map((component) => part(component, "bwClassMimoDl"))
+                .filter(Boolean);
+            const ul = combo.components
+                .map((component) => part(component, "bwClassMimoUl"))
+                .filter(Boolean);
+            return `${dl.join(" + ") || "&mdash;"} (UL: ${ul.join(" + ") || "&mdash;"})`;
+        }
+
+        function generateLteTable(data) {
+            filteredGroups = applyLteBandFilter(data.combos);
+            let totalRows = filteredGroups.length;
+            let totalPages = rowsPerPage === Infinity
+                ? 1
+                : Math.ceil(totalRows / rowsPerPage);
+
+            let start = (currentPage - 1) * rowsPerPage;
+            let end = start + rowsPerPage;
+
+            let tableHTML = `<div class="binarypbInfo"><span>LTE binarypb | Version: ${data.version} | Bitmask:
+                <input type="text" value="${data.bitmask}" onchange="updateLteBitmask(this.value)">
+                </span></div>
+            <table class="main-table" style="border-collapse: collapse;">
+                <tr>
+                    <th><button title="Add a new combo" onclick="addLteCombo()">+</button> Filtered LTE Combos: ${totalRows}/${data.combos.length}</th>
+                    <th>conf id 0-63</th>
+                    <th>conf id 64-95</th>
+                    <th>Actions</th>
+                </tr>`;
+
+            if (currentPage > totalPages) {
+                currentPage = 1;
+                start = 0;
+                end = rowsPerPage;
+            }
+
+            const paginatedCombos = filteredGroups.slice(start, end);
+
+            paginatedCombos.forEach((combo, localComboIndex) => {
+                const comboIndex = start + localComboIndex;
+
+                let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
+                    <div class="groupheader">
+                        <span>Combo: ${lteComboSummary(combo)}</span>
+                        <span>bcs:</span>
+                        <input type="text" name="bcs" value="${parseBcs(combo.bcs)}" oninput="updateLteBcs(${comboIndex}, this.value)">
+                    </div>`;
+
+                combo.components.forEach((component, componentIndex) => {
+                    const dlValue = Number(component.bwClassMimoDl) || 0;
+                    const dlMimo = dlValue & 1;
+                    const ulValue = Number(component.bwClassMimoUl) || 0;
+
+                    const addBandBtn = componentIndex === combo.components.length - 1
+                        ? `<button onclick="addLteBand(${comboIndex})">+</button>`
+                        : "";
+                    const moveBandUpBtn = `<button title="Move band up" onclick="moveLteBand(${comboIndex}, ${componentIndex}, -1)" ${componentIndex === 0 ? "disabled" : ""}>↑</button>`;
+                    const moveBandDownBtn = `<button title="Move band down" onclick="moveLteBand(${comboIndex}, ${componentIndex}, 1)" ${componentIndex === combo.components.length - 1 ? "disabled" : ""}>↓</button>`;
+                    const removeBandBtn = `<button onclick="removeLteBand(${comboIndex}, ${componentIndex})">-</button>`;
+
+                    const dlClassOptions = LTE_DL_CLASS_OPTIONS.map(
+                        ([value, label]) =>
+                            `<option value="${value}" ${(dlValue & ~1) === Number(value) ? "selected" : ""}>${label}</option>`
+                    ).join("");
+                    const dlMimoOptions = [
+                        ["0", "2x2"],
+                        ["1", "4x4"],
+                    ].map(([value, label]) =>
+                        `<option value="${value}" ${dlMimo === Number(value) ? "selected" : ""}>${label}</option>`
+                    ).join("");
+                    const ulClassOptions = LTE_UL_CLASS_OPTIONS.map(
+                        ([value, label]) =>
+                            `<option value="${value}" ${ulValue === Number(value) ? "selected" : ""}>${label}</option>`
+                    ).join("");
+
+                    innerTableHTML += `<tr>
+                        <td width="135">
+                            <input name="band-input" type="text" class="band-input" value="${component.band}"
+                                onchange="updateLteBand(${comboIndex}, ${componentIndex}, this.value)" />
+                            ${moveBandUpBtn} ${moveBandDownBtn} ${removeBandBtn} ${addBandBtn}
+                        </td>
+                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlClass', this.value)">${dlClassOptions}</select></td>
+                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlMimo', this.value)">${dlMimoOptions}</select></td>
+                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'ulClass', this.value)">${ulClassOptions}</select></td>
+                    </tr>`;
+                });
+
+                innerTableHTML += '</table>';
+
+                tableHTML += `<tr class="combo-row">
+                    <td>${innerTableHTML}</td>
+                    <td class="confmask">${combo.configMaskLow}</td>
+                    <td class="confmask">${combo.configMaskHigh}</td>
+                    <td class="buttons">
+                        <button title="Copy this combo" class="btn-copy" onclick="copyLteCombo(${comboIndex})">Copy</button>
+                        <button title="Remove this combo" class="btn-rem" onclick="removeLteCombo(${comboIndex})">Remove</button>
+                    </td>
+                </tr>`;
+            });
+
+            updatePaginationControls(totalPages);
+            tableHTML += `</table>`;
+            document.getElementById("tableContainer").innerHTML = tableHTML;
+            document.getElementById("recompileBtn").style.display = "block";
+            document.getElementById("bandFilter").style.display = "block";
+            document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1A+3C+8A";
+            document.getElementById("pageSizeSelector").style.display = "block";
+        }
+
+        function applyLteBandFilter(combos) {
+            if (!bandFilter) return combos; // No filter applied
+
+            bandFilter = bandFilter.replace(/\s+/g, "").replace(/\+$/, "");
+
+            // Parse filter parts like "1A", "3C", "8a" (band + DL class letter)
+            const filterParts = bandFilter.split("+").map(part => {
+                const match = part.match(/^(\d+)([a-fA-F])$/);
+                if (!match) return null;
+                return {
+                    band: Number(match[1]),
+                    letter: match[2].toUpperCase(),
+                };
+            }).filter(Boolean);
+
+            // If no valid filter parts, return the full set of combos
+            if (filterParts.length === 0) return combos;
+
+            return combos.filter(combo => {
+                // Count available components per band+class so repeated
+                // filter parts (e.g. 1A+1A) require that many matches.
+                const available = new Map();
+                combo.components.forEach(component => {
+                    const key = Number(component.band) + "|" +
+                        lteClassLetter(Number(component.bwClassMimoDl) || 0);
+                    available.set(key, (available.get(key) || 0) + 1);
+                });
+
+                return filterParts.every(part => {
+                    const key = part.band + "|" + part.letter;
+                    const count = available.get(key) || 0;
+                    if (count === 0) return false;
+                    available.set(key, count - 1);
+                    return true;
+                });
+            });
+        }
+
+        function updateLteBitmask(value) {
+            let numValue = parseInt(value, 10);
+            if (isNaN(numValue)) {
+                numValue = 0;
+            }
+            decodedData.bitmask = numValue >>> 0;
+        }
+
+        function updateLteBcs(comboIndex, indexes) {
+            if (typeof indexes === "string") {
+                if (indexes.trim().toLowerCase() === "all") {
+                    decodedData.combos[comboIndex].bcs = 0xFFFFFFFF;
+                    return;
+                }
+
+                indexes = indexes.split(",").map(num => parseInt(num.trim(), 10));
+            }
+
+            if (!Array.isArray(indexes)) {
+                return;
+            }
+
+            let binaryArray = new Array(32).fill("0");
+            indexes.forEach(index => {
+                if (!isNaN(index) && index >= 0 && index < 32) {
+                    binaryArray[index] = "1";
+                }
+            });
+            decodedData.combos[comboIndex].bcs = parseInt(binaryArray.join(""), 2) >>> 0;
+        }
+
+        function updateLteBand(comboIndex, componentIndex, value) {
+            const band = parseInt(value, 10);
+            if (isNaN(band) || band <= 0) {
+                alert("Band must be a positive integer.");
+                generateTable(decodedData);
+                return;
+            }
+            decodedData.combos[comboIndex].components[componentIndex].band = band;
+            generateTable(decodedData);
+        }
+
+        function updateLteComponent(comboIndex, componentIndex, field, value) {
+            const component = decodedData.combos[comboIndex].components[componentIndex];
+            const numValue = parseInt(value, 10) || 0;
+
+            if (field === "dlClass") {
+                // Keep the existing 4x4 MIMO bit.
+                component.bwClassMimoDl = numValue | (component.bwClassMimoDl & 1);
+            } else if (field === "dlMimo") {
+                // Only modify the 4x4 MIMO bit.
+                component.bwClassMimoDl = (component.bwClassMimoDl & ~1) | numValue;
+            } else if (field === "ulClass") {
+                component.bwClassMimoUl = numValue;
+            }
+
+            generateTable(decodedData);
+        }
+
+        function addLteBand(comboIndex) {
+            decodedData.combos[comboIndex].components.push({
+                band: 1,
+                bwClassMimoDl: 32768,
+                bwClassMimoUl: 0,
+            });
+            generateTable(decodedData);
+        }
+
+        function removeLteBand(comboIndex, componentIndex) {
+            decodedData.combos[comboIndex].components.splice(componentIndex, 1);
+            generateTable(decodedData);
+        }
+
+        function moveLteBand(comboIndex, componentIndex, direction) {
+            const components = decodedData.combos[comboIndex].components;
+            const target = componentIndex + direction;
+            if (target < 0 || target >= components.length) return;
+            [components[componentIndex], components[target]] =
+                [components[target], components[componentIndex]];
+            generateTable(decodedData);
+        }
+
+        function addLteCombo() {
+            decodedData.combos.unshift({
+                components: [{
+                    band: 1,
+                    bwClassMimoDl: 32768,
+                    bwClassMimoUl: 0,
+                }],
+                bcs: 2147483648, // BCS 0
+                configMaskLow: "0",
+                configMaskHigh: "0",
+            });
+            generateTable(decodedData);
+        }
+
+        function copyLteCombo(comboIndex) {
+            const copy = JSON.parse(JSON.stringify(decodedData.combos[comboIndex]));
+            decodedData.combos.unshift(copy);
+            generateTable(decodedData);
+        }
+
+        function removeLteCombo(comboIndex) {
+            decodedData.combos.splice(comboIndex, 1);
+            generateTable(decodedData);
         }
 
         const lteClassBBands = new Set([3, 5, 7, 8, 12, 27, 48, 66]);
@@ -1188,6 +1523,10 @@
         }
 
         function sortCombos() {
+            if (currentMode === "lte") {
+                alert("Sorting is not supported for LTE binarypbs.");
+                return;
+            }
             if (!decodedData || !Array.isArray(decodedData.ComboGroups)) {
                 alert("Load a .binarypb file first.");
                 return;
@@ -1900,22 +2239,41 @@
         // File handling and recompile functions
         let decodedData;
         let originalFilename;
+        let currentMode = "nr"; // "nr" or "lte"
+
         function decodeUeCapsBuffer(buffer, sourceName) {
-            const decodedMessage = UeCaps.decode(buffer);
-            // Must be an NR uecap binarypb: reject LTE /
-            // ap_plmn_mapping binaries (they have no ComboGroups).
-            if (!decodedMessage.ComboGroups ||
-                decodedMessage.ComboGroups.length === 0) {
-                document.getElementById('tableContainer').innerHTML =
-                    "Error: " + sourceName + " is not a valid NR .binarypb " +
-                    "(no ComboGroups found). LTE or ap_plmn_mapping " +
-                    "files are not supported.";
-                return false;
-            }
-            decodedData = UeCaps.toObject(decodedMessage, { defaults: true });
-            processDecodedMessage(decodedData);
-            generateTable(decodedData);
-            return true;
+            // NR uecap binarypb first.
+            try {
+                const nrMessage = UeCaps.decode(buffer);
+                if (nrMessage.ComboGroups &&
+                    nrMessage.ComboGroups.length > 0) {
+                    currentMode = "nr";
+                    decodedData = UeCaps.toObject(nrMessage, { defaults: true });
+                    processDecodedMessage(decodedData);
+                    generateTable(decodedData);
+                    return true;
+                }
+            } catch (error) {}
+
+            // LTE (ShannonLteUECap) binarypb.
+            try {
+                const lteMessage = UeCapsLte.decode(buffer);
+                if (lteMessage.combos &&
+                    lteMessage.combos.length > 0) {
+                    currentMode = "lte";
+                    decodedData = UeCapsLte.toObject(lteMessage, {
+                        defaults: true,
+                        longs: String,
+                    });
+                    generateTable(decodedData);
+                    return true;
+                }
+            } catch (error) {}
+
+            document.getElementById('tableContainer').innerHTML =
+                "Error: " + sourceName + " is not a valid NR or LTE " +
+                ".binarypb (ap_plmn_mapping files are not supported).";
+            return false;
         }
 
         function isNrUecapBytes(bytes) {
@@ -1923,6 +2281,16 @@
                 const decoded = UeCaps.decode(bytes);
                 return Array.isArray(decoded.ComboGroups) &&
                     decoded.ComboGroups.length > 0;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function isLteUecapBytes(bytes) {
+            try {
+                const decoded = UeCapsLte.decode(bytes);
+                return Array.isArray(decoded.combos) &&
+                    decoded.combos.length > 0;
             } catch (error) {
                 return false;
             }
@@ -1943,11 +2311,11 @@
         function showZipPicker() {
             const list = document.getElementById("zipPickerList");
             list.innerHTML = zipPickerFiles.map((file, index) => {
-                const nrLabel = isNrUecapBytes(file.bytes)
-                    ? ""
-                    : " (not a NR binarypb)";
+                let typeLabel = " (not a NR/LTE binarypb)";
+                if (isNrUecapBytes(file.bytes)) typeLabel = " (NR)";
+                else if (isLteUecapBytes(file.bytes)) typeLabel = " (LTE)";
                 return `<button class="zipPickBtn" onclick="pickZipFile(${index})">` +
-                    `${file.name}${nrLabel} &mdash; ${file.bytes.length} bytes` +
+                    `${file.name}${typeLabel} &mdash; ${file.bytes.length} bytes` +
                     `</button>`;
             }).join("");
             document.getElementById("zipPickerModal").style.display = "block";
@@ -2013,9 +2381,14 @@
 
         function recompileProtobuf() {
             if (!decodedData) return alert("No data to recompile!");
-            const message = UeCaps.fromObject(decodedData);
-            //console.log("Compiling this:", JSON.stringify(message, null, 2));
-            const buffer = UeCaps.encode(message).finish();
+            let buffer;
+            if (currentMode === "lte") {
+                buffer = UeCapsLte.encode(UeCapsLte.fromObject(decodedData)).finish();
+            } else {
+                const message = UeCaps.fromObject(decodedData);
+                //console.log("Compiling this:", JSON.stringify(message, null, 2));
+                buffer = UeCaps.encode(message).finish();
+            }
             return new Blob([buffer], { type: "application/octet-stream" });
         }
 
@@ -2054,6 +2427,7 @@
             reader.onloadend = function() {
                 const base64String = reader.result.split(',')[1]; // Strip out the "data:" prefix
                 localStorage.setItem('protobufData', base64String); // Store the Base64 string in localStorage
+                localStorage.setItem('pbMode', currentMode);
                 console.log("Data saved to localStorage.");
             };
             reader.readAsDataURL(compressedBlob); // Convert the Blob to a Base64 string
@@ -2079,14 +2453,9 @@
             document.getElementById("filenameInput").value = originalFilename || "default_filename";
             console.log(`${originalFilename} cache pb loaded from localStorage.`);
             // Decode the protobuf data using the decoded binary buffer
-            try {
-                const decodedMessage = UeCaps.decode(binaryArray);
-                decodedData = UeCaps.toObject(decodedMessage, { defaults: true });
-                processDecodedMessage(decodedData);
-                generateTable(decodedData);
-                console.log("Cache decoded successfully.");
-            } catch (error) {
-                console.error("Error loading or decoding data:", error);
+            // (decodeUeCapsBuffer auto-detects NR vs LTE).
+            if (!decodeUeCapsBuffer(binaryArray, originalFilename || "cached file")) {
+                console.error("Error loading or decoding data.");
             }
         }
 
