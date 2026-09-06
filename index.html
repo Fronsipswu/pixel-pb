@@ -409,6 +409,7 @@
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
                 <button title="Sort combos: NRCA first, biggest first, high bands first" onclick="sortCombos()">Sort combos</button>
+                <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" onclick="fixLtePlmnMapping()">Fix plmn mapping</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
             </div>
@@ -1316,8 +1317,21 @@
                     bwClassMimoUl: 0,
                 }],
                 bcs: 2147483648, // BCS 0
-                configMaskLow: "0",
-                configMaskHigh: "0",
+                // All-PLMN conf id masks (matches the LTE editor defaults).
+                configMaskLow: "18445899642336968703", // conf id 0-63
+                configMaskHigh: "2097151",             // conf id 64-95
+            });
+            generateTable(decodedData);
+        }
+
+        function fixLtePlmnMapping() {
+            if (currentMode !== "lte") {
+                alert("PLMN mapping fix only applies to LTE binarypbs.");
+                return;
+            }
+            decodedData.combos.forEach((combo) => {
+                combo.configMaskLow = "18445899642336968703"; // conf id 0-63
+                combo.configMaskHigh = "2097151";             // conf id 64-95
             });
             generateTable(decodedData);
         }
