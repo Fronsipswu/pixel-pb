@@ -125,6 +125,14 @@
             margin-bottom: 5px;
         }
 
+        #zipPickerModal .modal-content button.zipPickBtn {
+            display: block;
+            width: 100%;
+            margin-bottom: 8px;
+            text-align: left;
+            cursor: pointer;
+        }
+
         #jsonOutput {
             max-height: calc(70vh - 220px); /* Account for padding and close button */
             overflow-y: auto; /* Enable vertical scrolling */
@@ -373,7 +381,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <input type="file" title="Load a .binarybp uecapability file from a Pixel" id="fileInput" accept=".binarypb" />
+            <input type="file" title="Load a .binarypb uecapability file from a Pixel, or a Magisk zip containing one" id="fileInput" accept=".binarypb,.zip" />
             <div id="bandFilter" style="display: none;">
                 <input type="text" id="bandFilterInput" placeholder="Filter e.g., 1+3+7c+n78c">
                 <button onclick="bandFilter=''; bandFilterInput.value=''; generateTable(decodedData);">Clear</button>
@@ -386,11 +394,15 @@
                     <option value="20">20</option>
                     <option value="50">50</option>
                     <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                    <option value="all">All</option>
                 </select>
             </div>
             <div id="recompileBtn" style="display: none;">
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
+                <button title="Sort combos: NRCA first, biggest first, high bands first" onclick="sortCombos()">Sort combos</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
             </div>
@@ -413,6 +425,15 @@
             <pre id="jsonOutput" spellcheck="false" style="white-space: pre-wrap;"></pre>
             <button class="modalbtn" onclick="closeModal()">Cancel</button>
             <button class="modalbtn" id="savebtn" onclick="closeModal()">Apply</button>
+        </div>
+    </div>
+
+    <!-- Modal for choosing which binarypb to open from a zip -->
+    <div id="zipPickerModal" class="modal">
+        <div class="modal-content">
+            <h3>Choose which binarypb to open</h3>
+            <div id="zipPickerList"></div>
+            <button class="modalbtn" onclick="closeZipPicker()">Cancel</button>
         </div>
     </div>
 
@@ -729,7 +750,9 @@
         let globalIndexMap = []; // Stores correct indices after filtering & pagination
 
         function changePageSize(newSize) {
-            rowsPerPage = parseInt(newSize, 10);
+            rowsPerPage = newSize === "all"
+                ? Infinity
+                : parseInt(newSize, 10);
             currentPage = 1; // Reset to first page when changing page size
             generateTable(decodedData);
         }
@@ -737,7 +760,9 @@
         function generateTable(decodedData) {
             filteredGroups = applyBandFilter(decodedData.ComboGroups);
             let totalRows = filteredGroups.length;
-            let totalPages = Math.ceil(totalRows / rowsPerPage);
+            let totalPages = rowsPerPage === Infinity
+                ? 1
+                : Math.ceil(totalRows / rowsPerPage);
 
             let start = (currentPage - 1) * rowsPerPage;
             let end = start + rowsPerPage;
@@ -1022,6 +1047,166 @@
         function countCombos(groups) {
             return groups.reduce((sum, group) => sum + group.combo.length, 0);
         }
+
+        // ------------------------------------------------------------------
+        // Combo sorting
+        // ------------------------------------------------------------------
+
+        function featureIdList(value) {
+            if (!value) return [];
+            if (Array.isArray(value)) return value.map(Number);
+            if (typeof value.length === "number") {
+                return Array.from(value).map(Number);
+            }
+            return Object.keys(value)
+                .sort((left, right) => Number(left) - Number(right))
+                .map((key) => Number(value[key]));
+        }
+
+        function comboDlCarrierCount(combo) {
+            return (combo.cc || []).filter(
+                (cc) => (Number(cc.bwClassDL) || 0) > 0
+            ).length;
+        }
+
+        function comboUlCarrierCount(combo) {
+            return (combo.cc || []).filter(
+                (cc) => (Number(cc.bwClassUL) || 0) > 0
+            ).length;
+        }
+
+        function comboDlBandList(combo) {
+            const bands = [];
+            (combo.cc || []).forEach((cc) => {
+                if ((Number(cc.bwClassDL) || 0) > 0) {
+                    bands.push(Number(cc.band) || 0);
+                }
+            });
+            bands.sort((a, b) => b - a);
+            return bands;
+        }
+
+        function comboUlBandList(combo) {
+            const bands = [];
+            (combo.cc || []).forEach((cc) => {
+                if ((Number(cc.bwClassUL) || 0) > 0) {
+                    bands.push(Number(cc.band) || 0);
+                }
+            });
+            bands.sort((a, b) => b - a);
+            return bands;
+        }
+
+        function comboIsNrca(combo) {
+            const components = combo.cc || [];
+            return components.length > 0 &&
+                components.every((cc) => Number(cc.band) > 10000);
+        }
+
+        function comboUlMimoScore(combo) {
+            let score = 0;
+            (combo.cc || []).forEach((cc) => {
+                const ulIds = featureIdList(cc.ulFeaturePerCCIds);
+                if (Number(cc.band) > 10000) {
+                    // NR: non-codebook UL MIMO layers from the feature set.
+                    ulIds.forEach((id) => {
+                        if (id > 0 && decodedData?.ulFeaturePerCCList?.[id - 1]) {
+                            score += Number(
+                                decodedData.ulFeaturePerCCList[id - 1].maxMimoNonCb
+                            ) || 0;
+                        }
+                    });
+                } else {
+                    // LTE: ulFeatureIndex 1 -> 2 layers, 2 -> 1 layer.
+                    const ulIndex = Number(cc.ulFeatureIndex) || 0;
+                    if (ulIndex === 1) score += 2;
+                    else if (ulIndex === 2) score += 1;
+                }
+            });
+            return score;
+        }
+
+        function comboSortKey(combo) {
+            return {
+                isNrca: comboIsNrca(combo),
+                dlCarriers: comboDlCarrierCount(combo),
+                dlBands: comboDlBandList(combo),
+                ulCarriers: comboUlCarrierCount(combo),
+                ulBands: comboUlBandList(combo),
+                ulMimoScore: comboUlMimoScore(combo),
+            };
+        }
+
+        function compareNumberArraysDesc(left, right) {
+            const length = Math.min(left.length, right.length);
+            for (let index = 0; index < length; index++) {
+                if (left[index] !== right[index]) {
+                    return right[index] - left[index];
+                }
+            }
+            return right.length - left.length;
+        }
+
+        function compareComboKeys(left, right) {
+            // NRCA before ENDC.
+            if (left.isNrca !== right.isNrca) {
+                return left.isNrca ? -1 : 1;
+            }
+
+            // Most DL carriers first.
+            if (left.dlCarriers !== right.dlCarriers) {
+                return right.dlCarriers - left.dlCarriers;
+            }
+
+            // Same DL size: higher DL bands first.
+            const dlBandCompare = compareNumberArraysDesc(
+                left.dlBands,
+                right.dlBands
+            );
+            if (dlBandCompare !== 0) return dlBandCompare;
+
+            // ULCA (more UL carriers) before fewer/single-UL.
+            if (left.ulCarriers !== right.ulCarriers) {
+                return right.ulCarriers - left.ulCarriers;
+            }
+
+            // Same UL carrier count: higher UL bands first.
+            const ulBandCompare = compareNumberArraysDesc(
+                left.ulBands,
+                right.ulBands
+            );
+            if (ulBandCompare !== 0) return ulBandCompare;
+
+            // Tie-break: prefer higher UL MIMO before falling back to stable order.
+            return right.ulMimoScore - left.ulMimoScore;
+        }
+
+        function groupSortKey(group) {
+            const keys = (group.combo || []).map(comboSortKey);
+            keys.sort(compareComboKeys);
+            return keys[0] || comboSortKey({ cc: [] });
+        }
+
+        function sortCombos() {
+            if (!decodedData || !Array.isArray(decodedData.ComboGroups)) {
+                alert("Load a .binarypb file first.");
+                return;
+            }
+
+            decodedData.ComboGroups.sort((left, right) => {
+                return compareComboKeys(
+                    groupSortKey(left),
+                    groupSortKey(right)
+                );
+            });
+
+            currentPage = 1;
+            generateTable(decodedData);
+            console.log(
+                `Sorted ${decodedData.ComboGroups.length} combo groups: ` +
+                "NRCA first, biggest first, high bands first."
+            );
+        }
         
         function bandParseInt(bwClassDL, Band) {
             let bwClass = "";
@@ -1169,7 +1354,9 @@
         }
 
         function changePage(direction) {
-            let totalPages = Math.ceil(filteredGroups.length / rowsPerPage);
+            let totalPages = rowsPerPage === Infinity
+                ? 1
+                : Math.ceil(filteredGroups.length / rowsPerPage);
 
             currentPage += direction;
             if (currentPage < 1) currentPage = 1;
@@ -1713,27 +1900,116 @@
         // File handling and recompile functions
         let decodedData;
         let originalFilename;
-        document.getElementById('fileInput').addEventListener('change', function(event) {
+        function decodeUeCapsBuffer(buffer, sourceName) {
+            const decodedMessage = UeCaps.decode(buffer);
+            // Must be an NR uecap binarypb: reject LTE /
+            // ap_plmn_mapping binaries (they have no ComboGroups).
+            if (!decodedMessage.ComboGroups ||
+                decodedMessage.ComboGroups.length === 0) {
+                document.getElementById('tableContainer').innerHTML =
+                    "Error: " + sourceName + " is not a valid NR .binarypb " +
+                    "(no ComboGroups found). LTE or ap_plmn_mapping " +
+                    "files are not supported.";
+                return false;
+            }
+            decodedData = UeCaps.toObject(decodedMessage, { defaults: true });
+            processDecodedMessage(decodedData);
+            generateTable(decodedData);
+            return true;
+        }
+
+        function isNrUecapBytes(bytes) {
+            try {
+                const decoded = UeCaps.decode(bytes);
+                return Array.isArray(decoded.ComboGroups) &&
+                    decoded.ComboGroups.length > 0;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function loadPbBytes(bytes, pbName) {
+            originalFilename = pbName.endsWith(".binarypb")
+                ? pbName.slice(0, -9)
+                : pbName;
+            document.getElementById("filenameInput").value =
+                originalFilename || "default_filename";
+            return decodeUeCapsBuffer(bytes, pbName);
+        }
+
+        let zipExtraFiles = []; // Sibling binarypbs from an imported zip, kept on export
+        let zipPickerFiles = [];
+
+        function showZipPicker() {
+            const list = document.getElementById("zipPickerList");
+            list.innerHTML = zipPickerFiles.map((file, index) => {
+                const nrLabel = isNrUecapBytes(file.bytes)
+                    ? ""
+                    : " (not a NR binarypb)";
+                return `<button class="zipPickBtn" onclick="pickZipFile(${index})">` +
+                    `${file.name}${nrLabel} &mdash; ${file.bytes.length} bytes` +
+                    `</button>`;
+            }).join("");
+            document.getElementById("zipPickerModal").style.display = "block";
+        }
+
+        function closeZipPicker() {
+            document.getElementById("zipPickerModal").style.display = "none";
+            zipPickerFiles = [];
+        }
+
+        function pickZipFile(index) {
+            const chosen = zipPickerFiles[index];
+            if (!chosen) return;
+            const others = zipPickerFiles.filter(
+                (file, i) => i !== index
+            );
+            closeZipPicker();
+            if (loadPbBytes(chosen.bytes, chosen.name)) {
+                zipExtraFiles = others;
+            }
+        }
+
+        document.getElementById('fileInput').addEventListener('change', async function(event) {
             const file = event.target.files[0];
             if (!file) return;
-            originalFilename = file.name.endsWith(".binarypb") ? file.name.slice(0, -9) : file.name;
-            
-            document.getElementById("filenameInput").value = originalFilename || "default_filename";
 
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const buffer = new Uint8Array(e.target.result);
-                try {
-                    const decodedMessage = UeCaps.decode(buffer);
-                    decodedData = UeCaps.toObject(decodedMessage, { defaults: true });
-                    processDecodedMessage(decodedData);
-                    generateTable(decodedData);
-                } catch (error) {
-                    document.getElementById('tableContainer').innerHTML = "Error decoding file: " + error.message;
+            try {
+                if (file.name.toLowerCase().endsWith(".zip")) {
+                    // Magisk zip: collect all binarypbs inside it.
+                    const zip = await JSZip.loadAsync(file);
+                    const entries = Object.values(zip.files).filter(
+                        (entry) => !entry.dir &&
+                            entry.name.replace(/\\/g, "/")
+                                .toLowerCase().endsWith(".binarypb")
+                    );
+                    if (entries.length === 0) {
+                        alert("No .binarypb file found inside the zip.");
+                        return;
+                    }
+                    const files = await Promise.all(entries.map(async (entry) => ({
+                        path: entry.name.replace(/\\/g, "/"),
+                        name: entry.name.replace(/\\/g, "/").split("/").pop(),
+                        bytes: await entry.async("uint8array"),
+                    })));
+                    files.sort((a, b) => a.path.localeCompare(b.path));
+                    if (files.length === 1) {
+                        zipExtraFiles = [];
+                        loadPbBytes(files[0].bytes, files[0].name);
+                    } else {
+                        zipPickerFiles = files;
+                        showZipPicker();
+                    }
+                } else {
+                    zipExtraFiles = []; // Standalone binarypb: no siblings to keep
+                    const buffer = new Uint8Array(await file.arrayBuffer());
+                    loadPbBytes(buffer, file.name);
                 }
-            };
-            reader.readAsArrayBuffer(file);
-        });        
+            } catch (error) {
+                document.getElementById('tableContainer').innerHTML =
+                    "Error decoding file: " + error.message;
+            }
+        });
 
         function recompileProtobuf() {
             if (!decodedData) return alert("No data to recompile!");
@@ -1854,7 +2130,7 @@
             const sampleBase64 = "IyEvc2Jpbi9zaAoKIyMjIyMjIyMjIyMjIyMjIyMKIyBJbml0aWFsaXphdGlvbgojIyMjIyMjIyMjIyMjIyMjIwoKdW1hc2sgMDIyCgojIGVjaG8gYmVmb3JlIGxvYWRpbmcgdXRpbF9mdW5jdGlvbnMKdWlfcHJpbnQoKSB7IGVjaG8gIiQxIjsgfQoKcmVxdWlyZV9uZXdfbWFnaXNrKCkgewogIHVpX3ByaW50ICIqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqIgogIHVpX3ByaW50ICIgUGxlYXNlIGluc3RhbGwgTWFnaXNrIHYyMC40KyEgIgogIHVpX3ByaW50ICIqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqIgogIGV4aXQgMQp9CgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgTG9hZCB1dGlsX2Z1bmN0aW9ucy5zaAojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCgpPVVRGRD0kMgpaSVBGSUxFPSQzCgptb3VudCAvZGF0YSAyPi9kZXYvbnVsbAoKWyAtZiAvZGF0YS9hZGIvbWFnaXNrL3V0aWxfZnVuY3Rpb25zLnNoIF0gfHwgcmVxdWlyZV9uZXdfbWFnaXNrCi4gL2RhdGEvYWRiL21hZ2lzay91dGlsX2Z1bmN0aW9ucy5zaApbICRNQUdJU0tfVkVSX0NPREUgLWx0IDIwNDAwIF0gJiYgcmVxdWlyZV9uZXdfbWFnaXNrCgppbnN0YWxsX21vZHVsZQpleGl0IDAK";
             
             const customizesh_file = `set_perm_recursive $MODPATH 0 0 0755 0644
-chcon u:object_r:vendor_fw_file:s0 $MODPATH/system/vendor/firmware/uecapconfig/${originalFilename}.binarypb`;
+chcon -R u:object_r:vendor_fw_file:s0 $MODPATH/system/vendor/firmware/uecapconfig`;
             const moduleprop_file = `id=PixelUecap
 name=Pixel Uecapa mod
 version=${curr_time}
@@ -1879,6 +2155,11 @@ description=Replaces ${originalFilename}. Generated with nxij.github.io/pixel-pb
             folder1.file("updater-script", "#MAGISK", { unixPermissions: "644" });
 
             folder2.file(`${originalFilename}.binarypb`, recompileProtobuf(), { unixPermissions: "644" });
+
+            // Keep the sibling binarypb files from an imported zip.
+            zipExtraFiles.forEach((file) => {
+                zip.file(file.path, file.bytes, { unixPermissions: "644" });
+            });
             
             try {
                 // Generate the ZIP file
