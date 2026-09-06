@@ -82,6 +82,15 @@
         .band-input {
             width: 45px;
         }
+        #fileInput {
+            /* Hide the native filename text: only the Choose File
+               button stays visible, the dropdown takes its place. */
+            width: 140px;
+            color: transparent;
+        }
+        .plmn-input {
+            width: 50px;
+        }
 
         .header {
             display: flex;
@@ -129,14 +138,6 @@
             display: inline-block;
             width: 150px;
             margin-bottom: 5px;
-        }
-
-        #zipPickerModal .modal-content button.zipPickBtn {
-            display: block;
-            width: 100%;
-            margin-bottom: 8px;
-            text-align: left;
-            cursor: pointer;
         }
 
         #jsonOutput {
@@ -387,7 +388,9 @@
 <body>
     <div class="container">
         <div class="header">
-            <input type="file" title="Load a NR or LTE .binarypb uecapability file from a Pixel, or a Magisk zip containing one" id="fileInput" accept=".binarypb,.zip" />
+            <input type="file" title="Load a NR, LTE or AP PLMN mapping .binarypb file from a Pixel, or a Magisk zip containing one" id="fileInput" accept=".binarypb,.zip" />
+            <select id="zipBinaryDropdown" title="binarypb contained in the loaded zip" style="display: none;"
+                onchange="selectZipFile(parseInt(this.value, 10))"></select>
             <div id="bandFilter" style="display: none;">
                 <input type="text" id="bandFilterInput" placeholder="Filter e.g., 1+3+7c+n78c">
                 <button onclick="bandFilter=''; bandFilterInput.value=''; generateTable(decodedData);">Clear</button>
@@ -432,15 +435,6 @@
             <pre id="jsonOutput" spellcheck="false" style="white-space: pre-wrap;"></pre>
             <button class="modalbtn" onclick="closeModal()">Cancel</button>
             <button class="modalbtn" id="savebtn" onclick="closeModal()">Apply</button>
-        </div>
-    </div>
-
-    <!-- Modal for choosing which binarypb to open from a zip -->
-    <div id="zipPickerModal" class="modal">
-        <div class="modal-content">
-            <h3>Choose which binarypb to open</h3>
-            <div id="zipPickerList"></div>
-            <button class="modalbtn" onclick="closeZipPicker()">Cancel</button>
         </div>
     </div>
 
@@ -623,6 +617,24 @@
         const lteRoot = protobuf.parse(lteProtoDefinition).root;
         const UeCapsLte = lteRoot.lookupType("LteUeCaps");
 
+        // AP PLMN mapping proto definition
+        const apPlmnProtoDefinition = `
+            syntax = "proto2";
+
+            message ApPlmnEntry {
+              repeated uint32 plmn = 1;
+              required uint32 conf_id = 2;
+              required string name = 3;
+            }
+
+            message ApPlmnMapping {
+              repeated ApPlmnEntry ids = 1;
+            }
+        `;
+
+        const apPlmnRoot = protobuf.parse(apPlmnProtoDefinition).root;
+        const ApPlmn = apPlmnRoot.lookupType("ApPlmnMapping");
+
         // Proto helper functions
         function decodeBase64ToBytes(base64Str) {
             const binaryString = atob(base64Str);
@@ -794,6 +806,10 @@
         function generateTable(decodedData) {
             if (currentMode === "lte") {
                 generateLteTable(decodedData);
+                return;
+            }
+            if (currentMode === "ap_plmn") {
+                generateApPlmnTable(decodedData);
                 return;
             }
 
@@ -1347,6 +1363,225 @@
             generateTable(decodedData);
         }
 
+        // ------------------------------------------------------------------
+        // AP PLMN mapping support
+        // ------------------------------------------------------------------
+
+        const PLMN_PATTERN = /^(\d{3})-(\d{2}|\d{3}|\*)$/;
+
+        function decodePlmn(value) {
+            value = Number(value) >>> 0;
+
+            // Mirrors the little-endian nibble layout of ez_ap_plmn_edit.py.
+            const b0 = (value >>> 16) & 0xFF; // raw[2]
+            const b1 = (value >>> 8) & 0xFF;  // raw[1]
+            const b2 = value & 0xFF;          // raw[0]
+
+            const mcc1 = b0 & 0x0F;
+            const mcc2 = (b0 >> 4) & 0x0F;
+            const mcc3 = b1 & 0x0F;
+
+            const mnc3 = (b1 >> 4) & 0x0F;
+            const mnc1 = b2 & 0x0F;
+            const mnc2 = (b2 >> 4) & 0x0F;
+
+            if (mcc1 > 9 || mcc2 > 9 || mcc3 > 9) {
+                return "raw:" + value;
+            }
+
+            const mcc = `${mcc1}${mcc2}${mcc3}`;
+
+            if (mnc1 === 0xF && mnc2 === 0xF) {
+                return `${mcc}-*`;
+            }
+            if (mnc3 === 0xF) {
+                if (mnc1 > 9 || mnc2 > 9) return "raw:" + value;
+                return `${mcc}-${mnc1}${mnc2}`;
+            }
+            if (mnc1 > 9 || mnc2 > 9 || mnc3 > 9) {
+                return "raw:" + value;
+            }
+            return `${mcc}-${mnc1}${mnc2}${mnc3}`;
+        }
+
+        function encodePlmn(plmn) {
+            const match = String(plmn).trim().match(PLMN_PATTERN);
+            if (!match) {
+                throw new Error('Invalid PLMN "' + plmn +
+                    '". Use 520-03, 310-260, or 520-*');
+            }
+
+            const mcc = match[1];
+            const mnc = match[2];
+
+            const mcc1 = Number(mcc[0]);
+            const mcc2 = Number(mcc[1]);
+            const mcc3 = Number(mcc[2]);
+
+            let mnc1, mnc2, mnc3;
+            if (mnc === "*") {
+                mnc1 = 0xF; mnc2 = 0xF; mnc3 = 0xF;
+            } else if (mnc.length === 2) {
+                mnc1 = Number(mnc[0]);
+                mnc2 = Number(mnc[1]);
+                mnc3 = 0xF;
+            } else {
+                mnc1 = Number(mnc[0]);
+                mnc2 = Number(mnc[1]);
+                mnc3 = Number(mnc[2]);
+            }
+
+            const b0 = (mcc2 << 4) | mcc1;
+            const b1 = (mnc3 << 4) | mcc3;
+            const b2 = (mnc2 << 4) | mnc1;
+
+            return (b0 * 65536 + b1 * 256 + b2) >>> 0;
+        }
+
+        function parseRawPlmn(text) {
+            const raw = /^0[xX]/.test(text)
+                ? parseInt(text, 16)
+                : parseInt(text, 10);
+            if (isNaN(raw) || raw < 0 || raw > 0xFFFFFFFF) {
+                throw new Error('Invalid raw PLMN integer "' + text + '"');
+            }
+            return raw >>> 0;
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
+
+        function generateApPlmnTable(data) {
+            filteredGroups = data.ids;
+            let totalRows = filteredGroups.length;
+            let totalPages = rowsPerPage === Infinity
+                ? 1
+                : Math.ceil(totalRows / rowsPerPage);
+
+            let start = (currentPage - 1) * rowsPerPage;
+            let end = start + rowsPerPage;
+
+            if (currentPage > totalPages) {
+                currentPage = 1;
+                start = 0;
+                end = rowsPerPage;
+            }
+
+            let tableHTML = `<div class="binarypbInfo"><span>AP PLMN Mapping binarypb</span></div>
+            <table class="main-table" style="border-collapse: collapse;">
+                <tr>
+                    <th><button title="Add a new mapping" onclick="addApPlmnMapping()">+</button> Mappings: ${totalRows}/${data.ids.length}</th>
+                    <th>Actions</th>
+                </tr>`;
+
+            const paginatedEntries = filteredGroups.slice(start, end);
+
+            paginatedEntries.forEach((entry, localIndex) => {
+                const entryIndex = start + localIndex;
+
+                let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
+                    <div class="groupheader">
+                        <span>conf_id:</span>
+                        <input type="text" class="band-input" value="${entry.confId}" onchange="updateApPlmnConfId(${entryIndex}, this.value)">
+                        <span>name:</span>
+                        <input type="text" value="${escapeHtml(entry.name)}" onchange="updateApPlmnName(${entryIndex}, this.value)">
+                    </div>`;
+
+                entry.plmn.forEach((rawPlmn, plmnIndex) => {
+                    const removePlmnBtn = `<button title="Remove PLMN" onclick="removeApPlmnPlmn(${entryIndex}, ${plmnIndex})">-</button>`;
+                    const addPlmnBtn = plmnIndex === entry.plmn.length - 1
+                        ? `<button title="Add PLMN" onclick="addApPlmnPlmn(${entryIndex})">+</button>`
+                        : "";
+
+                    innerTableHTML += `<tr>
+                        <td width="135">
+                            <input name="plmn-input" type="text" class="plmn-input" value="${decodePlmn(rawPlmn)}"
+                                onchange="updateApPlmnPlmn(${entryIndex}, ${plmnIndex}, this.value)" />
+                        </td>
+                        <td>${removePlmnBtn} ${addPlmnBtn}</td>
+                    </tr>`;
+                });
+
+                innerTableHTML += '</table>';
+
+                tableHTML += `<tr class="combo-row">
+                    <td>${innerTableHTML}</td>
+                    <td class="buttons">
+                        <button title="Copy this mapping" class="btn-copy" onclick="copyApPlmnMapping(${entryIndex})">Copy</button>
+                        <button title="Remove this mapping" class="btn-rem" onclick="removeApPlmnMapping(${entryIndex})">Remove</button>
+                    </td>
+                </tr>`;
+            });
+
+            updatePaginationControls(totalPages);
+            tableHTML += `</table>`;
+            document.getElementById("tableContainer").innerHTML = tableHTML;
+            document.getElementById("recompileBtn").style.display = "block";
+            document.getElementById("bandFilter").style.display = "none";
+            document.getElementById("pageSizeSelector").style.display = "block";
+        }
+
+        function addApPlmnMapping() {
+            decodedData.ids.unshift({
+                plmn: [0],
+                confId: 0,
+                name: "NEW",
+            });
+            generateTable(decodedData);
+        }
+
+        function copyApPlmnMapping(entryIndex) {
+            const copy = JSON.parse(JSON.stringify(decodedData.ids[entryIndex]));
+            decodedData.ids.unshift(copy);
+            generateTable(decodedData);
+        }
+
+        function removeApPlmnMapping(entryIndex) {
+            decodedData.ids.splice(entryIndex, 1);
+            generateTable(decodedData);
+        }
+
+        function updateApPlmnConfId(entryIndex, value) {
+            let numValue = parseInt(value, 10);
+            if (isNaN(numValue) || numValue < 0) {
+                numValue = 0;
+            }
+            decodedData.ids[entryIndex].confId = numValue >>> 0;
+            generateTable(decodedData);
+        }
+
+        function updateApPlmnName(entryIndex, value) {
+            decodedData.ids[entryIndex].name = value;
+        }
+
+        function addApPlmnPlmn(entryIndex) {
+            decodedData.ids[entryIndex].plmn.push(0); // Shows as "raw:0" until edited
+            generateTable(decodedData);
+        }
+
+        function removeApPlmnPlmn(entryIndex, plmnIndex) {
+            decodedData.ids[entryIndex].plmn.splice(plmnIndex, 1);
+            generateTable(decodedData);
+        }
+
+        function updateApPlmnPlmn(entryIndex, plmnIndex, value) {
+            const text = value.trim();
+            try {
+                decodedData.ids[entryIndex].plmn[plmnIndex] =
+                    text.toLowerCase().startsWith("raw:")
+                        ? parseRawPlmn(text.slice(4))
+                        : encodePlmn(text);
+            } catch (error) {
+                alert(error.message);
+            }
+            generateTable(decodedData);
+        }
+
         const lteClassBBands = new Set([3, 5, 7, 8, 12, 27, 48, 66]);
 
         function isAllowedLteClassB(featureObj) {
@@ -1537,8 +1772,8 @@
         }
 
         function sortCombos() {
-            if (currentMode === "lte") {
-                alert("Sorting is not supported for LTE binarypbs.");
+            if (currentMode !== "nr") {
+                alert("Sorting only applies to NR binarypbs.");
                 return;
             }
             if (!decodedData || !Array.isArray(decodedData.ComboGroups)) {
@@ -2255,8 +2490,60 @@
         let originalFilename;
         let currentMode = "nr"; // "nr" or "lte"
 
+        // Filename-based binarypb type detection:
+        //   lte_<numbers>.binarypb  -> LTE
+        //   ap_plmn_mapping.binarypb -> not supported
+        //   anything else           -> NR
+        function detectPbMode(name) {
+            const base = (name || "").replace(/\\/g, "/")
+                .split("/").pop().toLowerCase();
+            if (base === "ap_plmn_mapping.binarypb") return "ap_plmn";
+            if (/^lte_\d+\.binarypb$/.test(base)) return "lte";
+            return "nr";
+        }
+
+        function showPbError(sourceName, message) {
+            document.getElementById('tableContainer').innerHTML =
+                "Error: " + sourceName + " " + message;
+            return false;
+        }
+
         function decodeUeCapsBuffer(buffer, sourceName) {
-            // NR uecap binarypb first.
+            const type = detectPbMode(sourceName);
+
+            if (type === "ap_plmn") {
+                try {
+                    const apPlmnMessage = ApPlmn.decode(buffer);
+                    if (apPlmnMessage.ids &&
+                        apPlmnMessage.ids.length > 0) {
+                        currentMode = "ap_plmn";
+                        decodedData = ApPlmn.toObject(apPlmnMessage, { defaults: true });
+                        generateTable(decodedData);
+                        return true;
+                    }
+                } catch (error) {}
+                return showPbError(sourceName,
+                    "could not be decoded as AP PLMN mapping binarypb.");
+            }
+
+            if (type === "lte") {
+                try {
+                    const lteMessage = UeCapsLte.decode(buffer);
+                    if (lteMessage.combos &&
+                        lteMessage.combos.length > 0) {
+                        currentMode = "lte";
+                        decodedData = UeCapsLte.toObject(lteMessage, {
+                            defaults: true,
+                            longs: String,
+                        });
+                        generateTable(decodedData);
+                        return true;
+                    }
+                } catch (error) {}
+                return showPbError(sourceName, "could not be decoded as LTE binarypb.");
+            }
+
+            // NR
             try {
                 const nrMessage = UeCaps.decode(buffer);
                 if (nrMessage.ComboGroups &&
@@ -2268,46 +2555,8 @@
                     return true;
                 }
             } catch (error) {}
-
-            // LTE (ShannonLteUECap) binarypb.
-            try {
-                const lteMessage = UeCapsLte.decode(buffer);
-                if (lteMessage.combos &&
-                    lteMessage.combos.length > 0) {
-                    currentMode = "lte";
-                    decodedData = UeCapsLte.toObject(lteMessage, {
-                        defaults: true,
-                        longs: String,
-                    });
-                    generateTable(decodedData);
-                    return true;
-                }
-            } catch (error) {}
-
-            document.getElementById('tableContainer').innerHTML =
-                "Error: " + sourceName + " is not a valid NR or LTE " +
-                ".binarypb (ap_plmn_mapping files are not supported).";
-            return false;
-        }
-
-        function isNrUecapBytes(bytes) {
-            try {
-                const decoded = UeCaps.decode(bytes);
-                return Array.isArray(decoded.ComboGroups) &&
-                    decoded.ComboGroups.length > 0;
-            } catch (error) {
-                return false;
-            }
-        }
-
-        function isLteUecapBytes(bytes) {
-            try {
-                const decoded = UeCapsLte.decode(bytes);
-                return Array.isArray(decoded.combos) &&
-                    decoded.combos.length > 0;
-            } catch (error) {
-                return false;
-            }
+            return showPbError(sourceName,
+                "is not a valid NR binarypb (no ComboGroups found).");
         }
 
         function loadPbBytes(bytes, pbName) {
@@ -2319,36 +2568,50 @@
             return decodeUeCapsBuffer(bytes, pbName);
         }
 
-        let zipExtraFiles = []; // Sibling binarypbs from an imported zip, kept on export
-        let zipPickerFiles = [];
+        let zipPickerFiles = []; // All binarypbs from the loaded zip
+        let currentZipIndex = -1; // Which zip file is loaded in the editor
 
-        function showZipPicker() {
-            const list = document.getElementById("zipPickerList");
-            list.innerHTML = zipPickerFiles.map((file, index) => {
-                let typeLabel = " (not a NR/LTE binarypb)";
-                if (isNrUecapBytes(file.bytes)) typeLabel = " (NR)";
-                else if (isLteUecapBytes(file.bytes)) typeLabel = " (LTE)";
-                return `<button class="zipPickBtn" onclick="pickZipFile(${index})">` +
-                    `${file.name}${typeLabel} &mdash; ${file.bytes.length} bytes` +
-                    `</button>`;
+        function populateZipDropdown(selectedIndex) {
+            const dropdown = document.getElementById("zipBinaryDropdown");
+            dropdown.innerHTML = zipPickerFiles.map((file, index) => {
+                const type = detectPbMode(file.name);
+                const typeLabel = type === "nr"
+                    ? " (NR)"
+                    : type === "lte"
+                        ? " (LTE)"
+                        : " (AP PLMN mapping)";
+                return `<option value="${index}" ${index === selectedIndex ? "selected" : ""}>` +
+                    `${escapeHtml(file.name)}${typeLabel}</option>`;
             }).join("");
-            document.getElementById("zipPickerModal").style.display = "block";
+            dropdown.style.display = "inline-block";
         }
 
-        function closeZipPicker() {
-            document.getElementById("zipPickerModal").style.display = "none";
-            zipPickerFiles = [];
+        function hideZipDropdown() {
+            const dropdown = document.getElementById("zipBinaryDropdown");
+            dropdown.innerHTML = "";
+            dropdown.style.display = "none";
         }
 
-        function pickZipFile(index) {
+        // Write the current editor state back into the zip file list,
+        // so edits survive switching between zip files.
+        function stashCurrentZipFile() {
+            if (currentZipIndex < 0 || !decodedData) return;
+            zipPickerFiles[currentZipIndex].bytes = recompileProtobufBytes();
+        }
+
+        // Switch the edited binarypb via the dropdown. Edits made to the
+        // previously loaded zip file are stashed; the zip export includes
+        // every file (edited ones re-encoded, untouched ones as-is).
+        function selectZipFile(index) {
             const chosen = zipPickerFiles[index];
             if (!chosen) return;
-            const others = zipPickerFiles.filter(
-                (file, i) => i !== index
-            );
-            closeZipPicker();
+
+            if (currentZipIndex !== index) {
+                stashCurrentZipFile();
+            }
+            currentPage = 1;
             if (loadPbBytes(chosen.bytes, chosen.name)) {
-                zipExtraFiles = others;
+                currentZipIndex = index;
             }
         }
 
@@ -2375,15 +2638,19 @@
                         bytes: await entry.async("uint8array"),
                     })));
                     files.sort((a, b) => a.path.localeCompare(b.path));
-                    if (files.length === 1) {
-                        zipExtraFiles = [];
-                        loadPbBytes(files[0].bytes, files[0].name);
-                    } else {
-                        zipPickerFiles = files;
-                        showZipPicker();
-                    }
+                    zipPickerFiles = files;
+                    currentZipIndex = -1;
+                    // Load the NR binarypb by default; fall back to the first entry.
+                    let defaultIndex = files.findIndex(
+                        (f) => detectPbMode(f.name) === "nr"
+                    );
+                    if (defaultIndex === -1) defaultIndex = 0;
+                    selectZipFile(defaultIndex);
+                    populateZipDropdown(defaultIndex);
                 } else {
-                    zipExtraFiles = []; // Standalone binarypb: no siblings to keep
+                    zipPickerFiles = [];
+                    currentZipIndex = -1;
+                    hideZipDropdown();
                     const buffer = new Uint8Array(await file.arrayBuffer());
                     loadPbBytes(buffer, file.name);
                 }
@@ -2393,17 +2660,21 @@
             }
         });
 
+        function recompileProtobufBytes() {
+            if (currentMode === "lte") {
+                return UeCapsLte.encode(UeCapsLte.fromObject(decodedData)).finish();
+            }
+            if (currentMode === "ap_plmn") {
+                return ApPlmn.encode(ApPlmn.fromObject(decodedData)).finish();
+            }
+            const message = UeCaps.fromObject(decodedData);
+            //console.log("Compiling this:", JSON.stringify(message, null, 2));
+            return UeCaps.encode(message).finish();
+        }
+
         function recompileProtobuf() {
             if (!decodedData) return alert("No data to recompile!");
-            let buffer;
-            if (currentMode === "lte") {
-                buffer = UeCapsLte.encode(UeCapsLte.fromObject(decodedData)).finish();
-            } else {
-                const message = UeCaps.fromObject(decodedData);
-                //console.log("Compiling this:", JSON.stringify(message, null, 2));
-                buffer = UeCaps.encode(message).finish();
-            }
-            return new Blob([buffer], { type: "application/octet-stream" });
+            return new Blob([recompileProtobufBytes()], { type: "application/octet-stream" });
         }
 
         function dlProtobuf() {
@@ -2427,6 +2698,23 @@
             location.reload();
         }
 
+        function bytesToBase64(bytes) {
+            let binary = "";
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        function base64ToBytes(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes;
+        }
+
         function saveToLocalStorage() {
             if (clearSessionFlag) {
                 // Do not save to localStorage if the flag is set
@@ -2434,8 +2722,33 @@
                 return;
             }
 
+            // Zip session: persist every zip file (with stashed edits)
+            // plus which one is active, so a reload restores everything.
+            if (zipPickerFiles.length > 0) {
+                stashCurrentZipFile();
+                const session = {
+                    files: zipPickerFiles.map((file) => ({
+                        path: file.path,
+                        name: file.name,
+                        b64: bytesToBase64(file.bytes),
+                    })),
+                    activeIndex: currentZipIndex,
+                };
+                try {
+                    localStorage.setItem('zipSession', JSON.stringify(session));
+                    localStorage.removeItem('protobufData');
+                    localStorage.removeItem('pbMode');
+                    localStorage.setItem('fileName', originalFilename);
+                    console.log("Zip session saved to localStorage.");
+                } catch (error) {
+                    console.error("Could not save zip session:", error);
+                }
+                return;
+            }
+            localStorage.removeItem('zipSession');
+
             const compressedBlob = recompileProtobuf(); // Get the binary protobuf data (Blob)
-            
+
             // Convert the Blob to a Base64 string (as localStorage can only store strings)
             const reader = new FileReader();
             reader.onloadend = function() {
@@ -2449,6 +2762,36 @@
         }
 
         function loadFromLocalStorage() {
+            // Restore a full zip session if one was saved.
+            const zipSessionRaw = localStorage.getItem('zipSession');
+            if (zipSessionRaw) {
+                try {
+                    const session = JSON.parse(zipSessionRaw);
+                    const files = (session.files || []).map((file) => ({
+                        path: file.path,
+                        name: file.name,
+                        bytes: base64ToBytes(file.b64),
+                    }));
+                    if (files.length > 0) {
+                        zipPickerFiles = files;
+                        let index = session.activeIndex;
+                        if (!(index >= 0 && index < files.length)) {
+                            index = files.findIndex(
+                                (f) => detectPbMode(f.name) === "nr"
+                            );
+                            if (index === -1) index = 0;
+                        }
+                        currentZipIndex = -1;
+                        selectZipFile(index);
+                        populateZipDropdown(index);
+                        console.log("Zip session restored from localStorage.");
+                        return;
+                    }
+                } catch (error) {
+                    console.error("Error restoring zip session:", error);
+                }
+            }
+
             const base64String = localStorage.getItem('protobufData');
             const fileName = localStorage.getItem('fileName');
             if (!base64String) {
@@ -2456,19 +2799,13 @@
                 return;
             }
 
-            // Decode the Base64 string back to binary (Uint8Array)
-            const binaryString = atob(base64String); // Decode the Base64 string to binary string
-            const binaryArray = new Uint8Array(binaryString.length); // Create a Uint8Array to hold the binary data
-            for (let i = 0; i < binaryString.length; i++) {
-                binaryArray[i] = binaryString.charCodeAt(i); // Convert the binary string to a Uint8Array
-            }
             originalFilename = fileName;
             // Update filename field
             document.getElementById("filenameInput").value = originalFilename || "default_filename";
             console.log(`${originalFilename} cache pb loaded from localStorage.`);
             // Decode the protobuf data using the decoded binary buffer
             // (decodeUeCapsBuffer auto-detects NR vs LTE).
-            if (!decodeUeCapsBuffer(binaryArray, originalFilename || "cached file")) {
+            if (!decodeUeCapsBuffer(base64ToBytes(base64String), originalFilename || "cached file")) {
                 console.error("Error loading or decoding data.");
             }
         }
@@ -2537,12 +2874,18 @@ description=Replaces ${originalFilename}. Generated with fronsipswu.github.io/pi
             folder1.file("update-binary", bytes, { binary: true, unixPermissions: "644" });
             folder1.file("updater-script", "#MAGISK", { unixPermissions: "644" });
 
-            folder2.file(`${originalFilename}.binarypb`, recompileProtobuf(), { unixPermissions: "644" });
-
-            // Keep the sibling binarypb files from an imported zip.
-            zipExtraFiles.forEach((file) => {
-                zip.file(file.path, file.bytes, { unixPermissions: "644" });
-            });
+            if (zipPickerFiles.length > 0) {
+                // Zip session: stash edits of the currently loaded file, then
+                // include every zip file — edited ones re-encoded, untouched
+                // ones byte-for-byte as they came in.
+                stashCurrentZipFile();
+                zipPickerFiles.forEach((file) => {
+                    zip.file(file.path, file.bytes, { unixPermissions: "644" });
+                });
+            } else {
+                // Standalone binarypb session.
+                folder2.file(`${originalFilename}.binarypb`, recompileProtobuf(), { unixPermissions: "644" });
+            }
             
             try {
                 // Generate the ZIP file
