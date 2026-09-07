@@ -855,6 +855,7 @@
                 group.combo.forEach((combo, localComboIndex) => {
                     let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
                         <div class="groupheader">
+                            <span>Combo: ${nrComboSummary(combo)}</span>
                             <span>bcsNr:</span>
                             <input type="text" name="bcsNr" value="${parseBcs(group.comboHeader.bcsNr)}" oninput="updateBcs(${realGroupIndex},this.value,'bcsNr')">
                             <span>bcsIntraENDC:</span>
@@ -1086,6 +1087,20 @@
             return LTE_CLASS_LETTERS[value & ~1] || "?";
         }
 
+        function nrComboSummary(combo) {
+            const part = (cc, field) => {
+                const cls = Number(cc[field]) || 0;
+                if (cls <= 0) return null;
+                const band = Number(cc.band) || 0;
+                const bandName = band > 10000 ? "n" + (band - 10000) : String(band);
+                const letter = String.fromCharCode(64 + cls);
+                return letter === "A" ? bandName : bandName + letter;
+            };
+            const dl = combo.cc.map((cc) => part(cc, "bwClassDL")).filter(Boolean);
+            const ul = combo.cc.map((cc) => part(cc, "bwClassUL")).filter(Boolean);
+            return `${dl.join("+") || "&mdash;"} (UL: ${ul.join("+") || "&mdash;"})`;
+        }
+
         function lteComboSummary(combo) {
             const part = (component, field) => {
                 const value = Number(component[field]) || 0;
@@ -1101,7 +1116,7 @@
             const ul = combo.components
                 .map((component) => part(component, "bwClassMimoUl"))
                 .filter(Boolean);
-            return `${dl.join(" + ") || "&mdash;"} (UL: ${ul.join(" + ") || "&mdash;"})`;
+            return `${dl.join("+") || "&mdash;"} (UL: ${ul.join("+") || "&mdash;"})`;
         }
 
         function generateLteTable(data) {
