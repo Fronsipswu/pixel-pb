@@ -471,7 +471,6 @@
             <div id="recompileBtn" style="display: none;">
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
-                <button title="Sort, clean up or validate the loaded combos" id="toolsBtn" onclick="openToolsModal()" style="display: none;">Tools</button>
                 <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" id="fixPlmnBtn" onclick="fixLtePlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
@@ -518,11 +517,15 @@
             <h3>Auto generate combos</h3>
             <div id="autoGenRows"></div>
             <button title="Add another band to the superset" onclick="addAutoGenRow()">+ Add band</button>
-            <label id="autoGenUlcaLabel" style="display: none; margin-left: 12px;">
+            <label id="autoGenUlcaLabel" style="display: none;">
                 <input type="checkbox" id="autoGenUlca">
                 Allow ULCA (NR uplink carrier aggregation; ULMIMO combos never get ULCA)
             </label>
-            <label id="autoGenMaxCcLabel" style="display: none; margin-left: 12px;">
+            <label id="autoGenLteCUlLabel" style="display: none;">
+                <input type="checkbox" id="autoGenLteCUl">
+                Allow class C LTE UL (ENDC: also generates LTE uplink variants keeping the anchor's bandwidth class)
+            </label>
+            <label id="autoGenMaxCcLabel" style="display: none;">
                 Max CC: <input type="number" id="autoGenMaxCc" value="6" min="1" max="32" style="width: 60px;">
                 <span title="Maximum total component carriers per combo. For NSA (ENDC), NR and LTE carriers both count."></span>
                 (NSA counts NR+LTE)
@@ -920,7 +923,7 @@
                 ${integrityCookieStoreButtons()}
                 </span>
                 <div>
-                <span id="infoAutoGen"><button title="Auto generate SA/NSA combos from a superset" onclick="openAutoGenModal()">Auto generate</button></span>
+                <span id="infoAutoGen"><button title="Auto generate SA/NSA combos from a superset" onclick="openAutoGenModal()">Auto generate</button> <button title="Sort, clean up or validate the loaded combos" onclick="openToolsModal()">Tools</button></span>
                 <span id="infoFeatureSets">FeatureSets:
                     <button title="Add custom DL/UL feature sets" onclick="showCustomFeatureModal()">Add</button>
                     <button title="Edit available FeatureSets" id="editFeatureSetsBtn" onclick="editFeatureSets(1)">JSON</button>
@@ -1091,7 +1094,6 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "none";
-            document.getElementById("toolsBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3+7c+n78c";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1229,6 +1231,7 @@
             let tableHTML = `<div class="binarypbInfo"><span>LTE binarypb | Version: ${data.version} | Bitmask:
                 <input type="text" value="${data.bitmask}" onchange="updateLteBitmask(this.value)">
                 <button title="Auto generate combos from a superset" onclick="openAutoGenModal()">Auto generate</button>
+                <button title="Sort, clean up or validate the loaded combos" onclick="openToolsModal()">Tools</button>
                 </span></div>
             <table class="main-table" style="border-collapse: collapse;">
                 <tr>
@@ -1313,7 +1316,6 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "inline-block";
-            document.getElementById("toolsBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3C+8A";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1688,9 +1690,11 @@
 
         function openAutoGenModal() {
             document.getElementById("autoGenUlcaLabel").style.display =
-                currentMode === "nr" ? "inline-block" : "none";
+                currentMode === "nr" ? "block" : "none";
+            document.getElementById("autoGenLteCUlLabel").style.display =
+                currentMode === "nr" ? "block" : "none";
             document.getElementById("autoGenMaxCcLabel").style.display =
-                currentMode === "nr" ? "inline-block" : "none";
+                currentMode === "nr" ? "block" : "none";
             if (autoGenRows.length === 0) {
                 autoGenRows.push(defaultAutoGenRow());
             }
@@ -2010,6 +2014,7 @@
             });
 
             const allowUlca = document.getElementById("autoGenUlca").checked;
+            const allowLteCUl = document.getElementById("autoGenLteCUl").checked;
 
             function buildNrCc(band, dlIds, ulIds) {
                 const cc = {
@@ -2025,18 +2030,32 @@
                 return cc;
             }
 
-            function buildLteAnchorCc(row) {
-                const count = LTE_CLASS_CC_COUNT[String.fromCharCode(64 + row.letter)] || 1;
+            function buildLteAnchorCc(row, letter, dlIds, dlFeatureIndex) {
                 return {
                     band: row.band,
-                    bwClassDL: row.letter,
+                    bwClassDL: letter,
                     bwClassUL: 1, // Class A
-                    dlFeatureIndex: parseLteFeatureIndex({ mimo: row.mimo, count, ran: 1 }).FeatureIndex,
+                    dlFeaturePerCCIds: dlIds,
+                    ulFeaturePerCCIds: new Uint8Array(1),
+                    dlFeatureIndex,
                     ulFeatureIndex: 1, // 2x2
                 };
             }
 
             const candidates = [];
+            // LTE anchors keep their superset feature configuration
+            // (marker ids + feature index) across class downgrades; only
+            // bwClassDL changes (full class + class A variant). Marker
+            // array length = standard carrier count per class.
+            const lteVariants = new Map();
+            lteRows.forEach((row) => {
+                const count = LTE_CLASS_CC_COUNT[String.fromCharCode(64 + row.letter)] || 1;
+                const dlIds = new Uint8Array(count);
+                const dlFeatureIndex = parseLteFeatureIndex({ mimo: row.mimo, count, ran: 1 }).FeatureIndex;
+                const variants = [{ letter: row.letter, dlIds, dlFeatureIndex }];
+                if (row.letter > 1) variants.push({ letter: 1, dlIds, dlFeatureIndex });
+                lteVariants.set(row, variants);
+            });
             for (const nrSubset of allSubsets(nrRows)) {
                 for (const variantSet of cartesian(nrSubset.map((row) => {
                     const variants = [row.dlIds];
@@ -2046,7 +2065,9 @@
                     // SA (no LTE anchor) and ENDC (each LTE subset) variants.
                     const lteSubsets = lteRows.length > 0 ? [[], ...allSubsets(lteRows)] : [[]];
                     for (const lteSubset of lteSubsets) {
-                        candidates.push({ nrSubset, variantSet, lteSubset });
+                        for (const anchorVariantSet of cartesian(lteSubset.map((row) => lteVariants.get(row)))) {
+                            candidates.push({ nrSubset, variantSet, lteSubset, anchorVariantSet });
+                        }
                     }
                 }
             }
@@ -2064,9 +2085,13 @@
             for (const candidate of candidates) {
                 // Hard limits: ENDC carries at most 3 NR carriers, the total
                 // carrier count is capped (NSA counts NR + LTE), and the total
-                // DL bandwidth must not exceed 340 MHz.
+                // DL bandwidth must not exceed 340 MHz. LTE bandwidth classes
+                // count as multiple carriers (A=1, B/C=2, D=3, E=4, F=5).
                 const nrCarriers = candidate.variantSet.reduce((sum, ids) => sum + ids.length, 0);
-                const totalCc = nrCarriers + candidate.lteSubset.length;
+                const lteCarriers = candidate.anchorVariantSet.reduce((sum, v) => {
+                    return sum + (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1);
+                }, 0);
+                const totalCc = nrCarriers + lteCarriers;
                 if (candidate.lteSubset.length > 0 && nrCarriers > 3) {
                     skippedLimits++;
                     continue;
@@ -2076,7 +2101,7 @@
                     continue;
                 }
 
-                // Each NR feature set id is one carrier; an LTE anchor is
+                // Each NR feature set id is one carrier; an LTE carrier is
                 // assumed to be 20 MHz.
                 let totalBw = 0;
                 candidate.nrSubset.forEach((row, index) => {
@@ -2086,16 +2111,20 @@
                         totalBw += Number(featureSet && featureSet.maxBw) || 0;
                     });
                 });
-                totalBw += candidate.lteSubset.length * 20;
+                totalBw += lteCarriers * 20;
                 if (totalBw > maxBw) {
                     skippedLimits++;
                     continue;
                 }
 
                 // Each entry knows its superset row and DL feature set variant.
-                const entries = candidate.lteSubset.map((row) => ({
-                    row, isLte: true, dlIds: [], cc: buildLteAnchorCc(row),
-                }));
+                const entries = candidate.lteSubset.map((row, index) => {
+                    const v = candidate.anchorVariantSet[index];
+                    return {
+                        row, isLte: true, dlIds: [],
+                        cc: buildLteAnchorCc(row, v.letter, v.dlIds, v.dlFeatureIndex),
+                    };
+                });
                 candidate.nrSubset.forEach((row, index) => {
                     const dlIds = candidate.variantSet[index];
                     entries.push({
@@ -2114,7 +2143,7 @@
                 entries.forEach((e) => lastByBand.set(Number(e.cc.band), e));
                 const legalBands = [...lastByBand.entries()]
                     .filter(([band]) => !blocked.has(band))
-                    .map(([band, e]) => ({ band, row: e.row, isLte: e.isLte }));
+                    .map(([band, e]) => ({ band, row: e.row, isLte: e.isLte, letter: e.cc.bwClassDL }));
 
                 // Build the UL variant list as band-slot lists.
                 // ENDC always uses exactly one LTE + one NR uplink (never a
@@ -2154,11 +2183,17 @@
                     });
                 }
                 if (!isSa) {
-                    const lteBands = legalBands.filter((b) => b.isLte).map((b) => b.band);
+                    const lteAnchors = legalBands.filter((b) => b.isLte);
                     const nrBands = legalBands.filter((b) => !b.isLte).map((b) => b.band);
-                    for (const lteBand of lteBands) {
+                    for (const anchor of lteAnchors) {
                         for (const nrBand of nrBands) {
-                            ulVariants.push([{ band: lteBand, ulmimo: false }, { band: nrBand, ulmimo: false }]);
+                            ulVariants.push([{ band: anchor.band, ulmimo: false, lteCUl: false }, { band: nrBand, ulmimo: false }]);
+                            // Class C UL variant: only when the anchor's class
+                            // capped at C lands on C (B anchors are skipped —
+                            // class B does not exist as an LTE UL class).
+                            if (allowLteCUl && Math.min(anchor.letter, 3) === 3) {
+                                ulVariants.push([{ band: anchor.band, ulmimo: false, lteCUl: true }, { band: nrBand, ulmimo: false }]);
+                            }
                         }
                     }
                 }
@@ -2179,14 +2214,31 @@
                             const band = Number(entry.cc.band);
                             const isUl = (remaining.get(band) || 0) > 0;
                             if (isUl) remaining.set(band, remaining.get(band) - 1);
+                            const slot = isUl
+                                ? variant.find((x) => x.band === band)
+                                : null;
                             if (entry.isLte) {
-                                return {
+                                const ulClass = isUl
+                                    ? (slot.lteCUl ? Math.min(entry.cc.bwClassDL, 3) : 1)
+                                    : 0;
+                                // Marker array length = UL carrier count
+                                // (class A=1, C=2, D=3).
+                                const ulCarriers = ulClass > 0
+                                    ? (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + ulClass)] || 1)
+                                    : 0;
+                                const cc = {
                                     band: entry.cc.band,
                                     bwClassDL: entry.cc.bwClassDL,
-                                    bwClassUL: isUl ? 1 : 0, // Always class A
+                                    bwClassUL: ulClass,
+                                    // Marker arrays so the UL/DL columns render.
+                                    dlFeaturePerCCIds: entry.cc.dlFeaturePerCCIds,
                                     dlFeatureIndex: entry.cc.dlFeatureIndex,
                                     ulFeatureIndex: isUl ? 2 : 0, // Always 1x1
                                 };
+                                if (ulCarriers > 0) {
+                                    cc.ulFeaturePerCCIds = new Uint8Array(ulCarriers);
+                                }
+                                return cc;
                             }
                             const baseUlIds = Array.from(entry.cc.ulFeaturePerCCIds || []);
                             let ulIds = null;
@@ -2441,7 +2493,6 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "none";
-            document.getElementById("toolsBtn").style.display = "none";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 520-03 or VZW";
             document.getElementById("pageSizeSelector").style.display = "block";
