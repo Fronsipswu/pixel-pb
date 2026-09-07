@@ -412,7 +412,7 @@
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
                 <button title="Sort combos: NRCA first, biggest first, high bands first" onclick="sortCombos()">Sort combos</button>
-                <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" onclick="fixLtePlmnMapping()">Fix plmn mapping</button>
+                <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" id="fixPlmnBtn" onclick="fixLtePlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
             </div>
@@ -995,6 +995,7 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
+            document.getElementById("fixPlmnBtn").style.display = "none";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3+7c+n78c";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1200,6 +1201,7 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
+            document.getElementById("fixPlmnBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1A+3C+8A";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1522,6 +1524,7 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
+            document.getElementById("fixPlmnBtn").style.display = "none";
             document.getElementById("bandFilter").style.display = "none";
             document.getElementById("pageSizeSelector").style.display = "block";
         }
@@ -2570,6 +2573,7 @@
 
         let zipPickerFiles = []; // All binarypbs from the loaded zip
         let currentZipIndex = -1; // Which zip file is loaded in the editor
+        let originalZipName = ""; // Name of the imported zip (for output naming)
 
         function populateZipDropdown(selectedIndex) {
             const dropdown = document.getElementById("zipBinaryDropdown");
@@ -2640,6 +2644,7 @@
                     files.sort((a, b) => a.path.localeCompare(b.path));
                     zipPickerFiles = files;
                     currentZipIndex = -1;
+                    originalZipName = file.name.replace(/\.zip$/i, "");
                     // Load the NR binarypb by default; fall back to the first entry.
                     let defaultIndex = files.findIndex(
                         (f) => detectPbMode(f.name) === "nr"
@@ -2650,6 +2655,7 @@
                 } else {
                     zipPickerFiles = [];
                     currentZipIndex = -1;
+                    originalZipName = "";
                     hideZipDropdown();
                     const buffer = new Uint8Array(await file.arrayBuffer());
                     loadPbBytes(buffer, file.name);
@@ -2733,6 +2739,7 @@
                         b64: bytesToBase64(file.bytes),
                     })),
                     activeIndex: currentZipIndex,
+                    zipName: originalZipName,
                 };
                 try {
                     localStorage.setItem('zipSession', JSON.stringify(session));
@@ -2774,6 +2781,7 @@
                     }));
                     if (files.length > 0) {
                         zipPickerFiles = files;
+                        originalZipName = session.zipName || "";
                         let index = session.activeIndex;
                         if (!(index >= 0 && index < files.length)) {
                             index = files.findIndex(
@@ -2902,7 +2910,9 @@ description=Replaces ${originalFilename}. Generated with fronsipswu.github.io/pi
                 const url = URL.createObjectURL(content);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `${originalFilename}-${curr_time}.zip`;
+                link.download = zipPickerFiles.length > 0
+                    ? `mod_${originalZipName}.zip`
+                    : `${originalFilename}-${curr_time}.zip`;
                 
                 // Trigger download
                 document.body.appendChild(link);
