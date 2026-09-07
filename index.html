@@ -464,7 +464,7 @@
             <div id="recompileBtn" style="display: none;">
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
-                <button title="Sort combos: NRCA first, biggest first, high bands first" onclick="sortCombos()">Sort combos</button>
+                <button title="Sort, clean up or validate the loaded combos" id="toolsBtn" onclick="openToolsModal()" style="display: none;">Tools</button>
                 <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" id="fixPlmnBtn" onclick="fixLtePlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
@@ -488,6 +488,20 @@
             <pre id="jsonOutput" spellcheck="false" style="white-space: pre-wrap;"></pre>
             <button class="modalbtn" onclick="closeModal()">Cancel</button>
             <button class="modalbtn" id="savebtn" onclick="closeModal()">Apply</button>
+        </div>
+    </div>
+
+    <!-- Tools modal (sort / delete / validate) -->
+    <div id="toolsModal" class="modal">
+        <div class="modal-content">
+            <h3>Tools</h3>
+            <div id="toolsOptions">
+                <button class="zipPickBtn" id="toolSortBtn" onclick="toolSortCombos()">Sort Combos</button>
+                <button class="zipPickBtn" onclick="toolDeleteAllCombos()">Delete all combos</button>
+                <button class="zipPickBtn" onclick="toolValidate()">Validate</button>
+            </div>
+            <pre id="toolsOutput" spellcheck="false" style="white-space: pre-wrap; max-height: 50vh; overflow: auto;"></pre>
+            <button class="modalbtn" onclick="closeToolsModal()">Close</button>
         </div>
     </div>
 
@@ -1048,6 +1062,7 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "none";
+            document.getElementById("toolsBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3+7c+n78c";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1268,6 +1283,7 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "inline-block";
+            document.getElementById("toolsBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3C+8A";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1435,6 +1451,172 @@
             generateTable(decodedData);
         }
 
+        // ------------------------------------------------------------------
+        // Tools modal (sort / delete all / validate)
+        // ------------------------------------------------------------------
+
+        function openToolsModal() {
+            document.getElementById("toolSortBtn").style.display =
+                currentMode === "nr" ? "block" : "none";
+            document.getElementById("toolsOutput").textContent = "";
+            document.getElementById("toolsModal").style.display = "block";
+        }
+
+        function closeToolsModal() {
+            document.getElementById("toolsModal").style.display = "none";
+        }
+
+        function toolSortCombos() {
+            closeToolsModal();
+            sortCombos();
+        }
+
+        function toolDeleteAllCombos() {
+            if (currentMode === "nr") {
+                if (!confirm("Delete all combo groups?")) return;
+                decodedData.ComboGroups = [];
+            } else if (currentMode === "lte") {
+                if (!confirm("Delete all LTE combos?")) return;
+                decodedData.combos = [];
+            } else {
+                alert("Delete all combos only applies to NR and LTE binarypbs.");
+                return;
+            }
+            closeToolsModal();
+            generateTable(decodedData);
+        }
+
+        function toolValidate() {
+            const issues = currentMode === "lte"
+                ? validateLteCombos()
+                : validateNrCombos();
+            document.getElementById("toolsOutput").textContent =
+                issues.length === 0
+                    ? "No issues found."
+                    : issues.join("\n");
+        }
+
+        // NR validation
+        function validateNrCombos() {
+            const issues = [];
+            const seen = new Map();
+            decodedData.ComboGroups.forEach((group, groupIndex) => {
+                group.combo.forEach((combo, comboIndex) => {
+                    const where = `group ${groupIndex + 1}, combo ${comboIndex + 1}`;
+
+                    const signature = combo.cc
+                        .map((cc) => `${Number(cc.band) || 0}/${Number(cc.bwClassDL) || 0}/${Number(cc.bwClassUL) || 0}`)
+                        .sort()
+                        .join("|");
+                    if (seen.has(signature)) {
+                        issues.push(`Duplicate: ${where} duplicates ${seen.get(signature)}.`);
+                    } else {
+                        seen.set(signature, where);
+                    }
+
+                    const hasUl = combo.cc.some((cc) => (Number(cc.bwClassUL) || 0) > 0);
+                    if (!hasUl) {
+                        issues.push(`${where}: uplink is missing.`);
+                    }
+                });
+            });
+            return issues;
+        }
+
+        // LTE validation (ported from the Shannon LTE editor's rules)
+        const LTE_SDL_BANDS = new Set([29, 32, 75]);
+        const LTE_LOW_BANDS = new Set([5, 8, 12, 13, 14, 17, 18, 19, 20, 26, 28, 29, 71]);
+        const LTE_NO_4X4_BANDS = new Set([...LTE_LOW_BANDS, 21]);
+        const LTE_CLASS_CC_COUNT = { A: 1, B: 2, C: 2, D: 3, E: 4, F: 5 };
+
+        function validateLteCombos() {
+            const issues = [];
+            const seen = new Map();
+
+            decodedData.combos.forEach((combo, index) => {
+                const num = index + 1;
+
+                const signature = combo.components
+                    .map((c) => `${Number(c.band) || 0}/${Number(c.bwClassMimoDl) || 0}/${Number(c.bwClassMimoUl) || 0}`)
+                    .sort()
+                    .join("|");
+                if (seen.has(signature)) {
+                    issues.push(`Combo ${num}: duplicate of combo ${seen.get(signature)}.`);
+                } else {
+                    seen.set(signature, num);
+                }
+
+                const bands = new Set(combo.components.map((c) => Number(c.band) || 0));
+                const ulBands = new Set(
+                    combo.components
+                        .filter((c) => (Number(c.bwClassMimoUl) || 0) > 0)
+                        .map((c) => Number(c.band) || 0)
+                );
+
+                if (bands.has(7) && bands.has(38) && (ulBands.has(7) || ulBands.has(38))) {
+                    issues.push(`Combo ${num}: bands 7 and 38 coexist, but uplink is assigned to band 7 or 38.`);
+                }
+
+                const sdlUl = [...ulBands].filter((band) => LTE_SDL_BANDS.has(band));
+                if (sdlUl.length > 0) {
+                    issues.push(`Combo ${num}: SDL cannot have uplink: ${sdlUl.join(", ")}.`);
+                }
+
+                const lowBands = [...bands].filter((band) => LTE_LOW_BANDS.has(band));
+                if (lowBands.length > 1 &&
+                    !(lowBands.length === 2 && lowBands.includes(20) && lowBands.includes(28))) {
+                    issues.push(`Combo ${num}: unsupported low-band combination ` +
+                        lowBands.join("+") + ". Only 20+28 is allowed.");
+                }
+
+                const bad4x4 = combo.components.filter((c) =>
+                    LTE_NO_4X4_BANDS.has(Number(c.band) || 0) &&
+                    ((Number(c.bwClassMimoDl) || 0) & 1)
+                );
+                if (bad4x4.length > 0) {
+                    issues.push(`Combo ${num}: 4x4 DL MIMO assigned to unsupported band(s): ` +
+                        bad4x4.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoDl) || 0)}`).join(", ") + ".");
+                }
+
+                let spatialStreams = 0;
+                combo.components.forEach((c) => {
+                    const value = Number(c.bwClassMimoDl) || 0;
+                    if (value <= 0) return;
+                    spatialStreams += (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) *
+                        ((value & 1) ? 4 : 2);
+                });
+                if (spatialStreams > 24) {
+                    issues.push(`Combo ${num}: ${spatialStreams} DL spatial streams exceeds the limit of 24.`);
+                }
+
+                const excessUl = combo.components.filter((c) => {
+                    const value = Number(c.bwClassMimoUl) || 0;
+                    return value > 0 && ["E", "F"].includes(lteClassLetter(value));
+                });
+                if (excessUl.length > 0) {
+                    issues.push(`Combo ${num}: UL class exceeds D: ` +
+                        excessUl.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoUl) || 0)}`).join(", ") + ".");
+                }
+
+                if (ulBands.size === 0) {
+                    const blocked = new Set(LTE_SDL_BANDS);
+                    if (bands.has(7) && bands.has(38)) {
+                        blocked.add(7);
+                        blocked.add(38);
+                    }
+                    const hasLegalUlBand = combo.components.some((c) =>
+                        (Number(c.bwClassMimoDl) || 0) > 0 &&
+                        !blocked.has(Number(c.band) || 0)
+                    );
+                    issues.push(hasLegalUlBand
+                        ? `Combo ${num}: uplink is missing.`
+                        : `Combo ${num}: uplink band unavailable (SDL-only combo).`);
+                }
+            });
+
+            return issues;
+        }
+
         function copyLteCombo(comboIndex) {
             const copy = JSON.parse(JSON.stringify(decodedData.combos[comboIndex]));
             decodedData.combos.unshift(copy);
@@ -1539,8 +1721,29 @@
                 .replace(/"/g, "&quot;");
         }
 
+        function applyApPlmnFilter(entries) {
+            if (!bandFilter) return entries; // No filter applied
+
+            // Space/comma separated terms; every term must match the
+            // mapping's name or one of its decoded PLMN strings.
+            const terms = bandFilter.split(/[\s,]+/)
+                .map(term => term.trim().toLowerCase())
+                .filter(Boolean);
+            if (terms.length === 0) return entries;
+
+            return entries.filter(entry => {
+                const haystacks = [
+                    String(entry.name || "").toLowerCase(),
+                    ...entry.plmn.map(plmn => decodePlmn(plmn).toLowerCase()),
+                ];
+                return terms.every(term =>
+                    haystacks.some(haystack => haystack.includes(term))
+                );
+            });
+        }
+
         function generateApPlmnTable(data) {
-            filteredGroups = data.ids;
+            filteredGroups = applyApPlmnFilter(data.ids);
             let totalRows = filteredGroups.length;
             let totalPages = rowsPerPage === Infinity
                 ? 1
@@ -1606,7 +1809,9 @@
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "none";
-            document.getElementById("bandFilter").style.display = "none";
+            document.getElementById("toolsBtn").style.display = "none";
+            document.getElementById("bandFilter").style.display = "block";
+            document.getElementById("bandFilterInput").placeholder = "Filter e.g., 520-03 or VZW";
             document.getElementById("pageSizeSelector").style.display = "block";
         }
 
