@@ -521,6 +521,18 @@
                 <input type="checkbox" id="autoGenUlca">
                 Allow ULCA (uplink carrier aggregation; ULMIMO combos never get ULCA)
             </label>
+            <label id="autoGenFddAaLabel" style="display: none;">
+                <input type="checkbox" id="autoGenFddAa" checked>
+                Allow FDD+FDD ULCA
+            </label>
+            <label id="autoGenTddAaLabel" style="display: none;">
+                <input type="checkbox" id="autoGenTddAa" checked>
+                Allow TDD+TDD ULCA
+            </label>
+            <label id="autoGenFddTddLabel" style="display: none;">
+                <input type="checkbox" id="autoGenFddTdd" checked>
+                Allow FDD+TDD ULCA
+            </label>
             <label id="autoGenLteCUlLabel" style="display: none;">
                 <input type="checkbox" id="autoGenLteCUl">
                 Allow class C LTE UL (ENDC: also generates LTE uplink variants keeping the anchor's bandwidth class)
@@ -1772,6 +1784,10 @@
         function openAutoGenModal() {
             document.getElementById("autoGenUlcaLabel").style.display =
                 currentMode === "ap_plmn" ? "none" : "block";
+            const lteUlcaSub = currentMode === "lte" ? "block" : "none";
+            document.getElementById("autoGenFddAaLabel").style.display = lteUlcaSub;
+            document.getElementById("autoGenTddAaLabel").style.display = lteUlcaSub;
+            document.getElementById("autoGenFddTddLabel").style.display = lteUlcaSub;
             document.getElementById("autoGenLteCUlLabel").style.display =
                 currentMode === "nr" ? "block" : "none";
             document.getElementById("autoGenMaxCcLabel").style.display =
@@ -2022,10 +2038,13 @@
             if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
                 throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
             }
+            const allowUlca = document.getElementById("autoGenUlca").checked;
+            const allowUlcaLteFddAa = document.getElementById("autoGenFddAa").checked;
+            const allowUlcaLteTddAa = document.getElementById("autoGenTddAa").checked;
+            const allowUlcaLteFddTdd = document.getElementById("autoGenFddTdd").checked;
             const maxCc = Math.min(7, Math.max(2,
                 parseInt(document.getElementById("autoGenMaxCc").value, 10) ||
                 DEVICE_LIMITS.defaultMaxCc));
-            const allowUlca = document.getElementById("autoGenUlca").checked;
 
             // Per component: every lower class in the expansion sequence
             // (D -> A/C/D, E -> A/C/D/E, F -> A/C/D/E/F), like the Shannon
@@ -2116,7 +2135,8 @@
                     const legalBands = [...legalIndexesByBand.keys()];
                     for (let i = 0; i < legalBands.length; i++) {
                         for (let j = i + 1; j < legalBands.length; j++) {
-                            if (!autogenValidUlPair(legalBands[i], legalBands[j])) continue;
+                            if (!autogenValidUlPair(legalBands[i], legalBands[j],
+                                allowUlcaLteFddAa, allowUlcaLteTddAa, allowUlcaLteFddTdd)) continue;
                             const a = legalIndexesByBand.get(legalBands[i]);
                             const b = legalIndexesByBand.get(legalBands[j]);
                             ulVariants.push([a[a.length - 1], b[b.length - 1]]);
@@ -2480,10 +2500,14 @@
             return summary;
         }
 
-        // ULCA band pair rules (ported from the Shannon LTE editor); a single
-        // checkbox enables FDD+FDD, TDD+TDD and FDD+TDD pairs alike. NR band
-        // numbers are normalized (n1 -> 1) so low-band rules apply too.
-        function autogenValidUlPair(left, right) {
+        // ULCA band pair rules (ported from the Shannon LTE editor's
+        // valid_ul_pair): SDL is always rejected, unsupported Low+Low mixes
+        // are rejected (B20+B28 stays allowed), and the FDD/TDD pair type is
+        // gated by the three policy flags. NR band numbers are normalized
+        // (n1 -> 1) so low-band rules apply too.
+        const LTE_TDD_BANDS = new Set([38, 39, 40, 41, 42, 48]);
+
+        function autogenValidUlPair(left, right, allowFddAa = true, allowTddAa = true, allowFddTdd = true) {
             left = left > 10000 ? left - 10000 : left;
             right = right > 10000 ? right - 10000 : right;
             if (LTE_SDL_BANDS.has(left) || LTE_SDL_BANDS.has(right)) return false;
@@ -2491,7 +2515,11 @@
                 !(left === 20 && right === 28) && !(left === 28 && right === 20)) {
                 return false;
             }
-            return true;
+            const leftTdd = LTE_TDD_BANDS.has(left);
+            const rightTdd = LTE_TDD_BANDS.has(right);
+            if (leftTdd && rightTdd) return allowTddAa;
+            if (!leftTdd && !rightTdd) return allowFddAa;
+            return allowFddTdd;
         }
 
         function copyLteCombo(comboIndex) {
