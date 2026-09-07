@@ -501,10 +501,9 @@
 
             /* --- NR / ENDC layout --- */
             .combo-table tr.nr-comp-row {
-                display: grid;
-                grid-template-columns: auto 1fr;
-                align-items: center;
-                gap: 4px 6px;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
                 padding: 5px 0;
                 border-bottom: 1px dashed light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
             }
@@ -512,8 +511,7 @@
                 border-bottom: none;
             }
             .combo-table tr.nr-comp-row > td.band-cell {
-                grid-column: 1 / -1;
-                width: auto !important;
+                width: 100% !important;
                 display: flex;
                 align-items: center;
                 gap: 4px;
@@ -521,30 +519,10 @@
                 border: none;
             }
             .combo-table tr.nr-comp-row > td.combodirind {
-                display: flex !important;
-                align-items: center;
-                justify-content: center;
-                width: auto !important;
-                padding: 0;
-                border: none;
-            }
-            .combo-table tr.nr-comp-row > td.combodirind .groupheader {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                margin: 0;
-                padding: 2px 5px;
-                font-size: 10px;
-                font-weight: bold;
-                color: light-dark(#444, #ddd);
-                background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.12));
-                border-radius: 4px;
-                border-bottom: none;
-                min-width: 22px;
-                text-align: center;
+                display: none !important;
             }
             .combo-table tr.nr-comp-row > td.nr-feature-cell {
-                width: auto !important;
+                width: 100% !important;
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
@@ -567,38 +545,59 @@
             /* --- LTE layout --- */
             .combo-table tr.lte-comp-row {
                 display: flex;
-                flex-wrap: wrap;
+                flex-wrap: nowrap;
                 align-items: center;
-                gap: 4px;
-                padding: 5px 0;
+                gap: 3px;
+                padding: 4px 0;
                 border-bottom: 1px dashed light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
+                width: 100%;
+                box-sizing: border-box;
             }
             .combo-table tr.lte-comp-row:last-child {
                 border-bottom: none;
             }
             .combo-table tr.lte-comp-row > td.band-cell {
-                flex: 1 1 100%;
+                flex: 0 0 auto;
                 width: auto !important;
-                display: flex;
+                display: inline-flex;
                 align-items: center;
-                gap: 4px;
-                padding: 2px 0;
+                gap: 2px;
+                padding: 0;
                 border: none;
             }
+            .combo-table tr.lte-comp-row > td.band-cell input.band-input {
+                width: 42px;
+                padding: 3px 4px;
+            }
+            .combo-table tr.lte-comp-row > td.band-cell button {
+                min-width: 30px;
+                height: 30px;
+                padding: 2px 4px;
+            }
             .combo-table tr.lte-comp-row > td.lte-field {
-                flex: 1 1 0;
+                flex: 0 1 auto;
                 min-width: 0;
                 width: auto !important;
-                display: flex;
+                display: inline-flex;
                 align-items: center;
-                gap: 3px;
-                padding: 2px 0;
+                gap: 2px;
+                padding: 0;
                 border: none;
             }
             .combo-table tr.lte-comp-row > td.lte-field select {
-                flex: 1 1 auto;
+                flex: 0 1 auto;
                 min-width: 0;
-                width: 100%;
+                padding: 3px 2px;
+                font-size: 12px;
+            }
+            .combo-table tr.lte-comp-row > td.lte-dl-class select {
+                width: 46px;
+            }
+            .combo-table tr.lte-comp-row > td.lte-dl-mimo select {
+                width: 58px;
+            }
+            .combo-table tr.lte-comp-row > td.lte-ul-class select {
+                width: 58px;
             }
             .field-label {
                 display: inline-block;
@@ -606,7 +605,7 @@
                 font-weight: bold;
                 color: light-dark(#666, #aaa);
                 text-transform: uppercase;
-                margin-right: 2px;
+                margin-right: 1px;
                 flex-shrink: 0;
             }
 
@@ -1517,7 +1516,7 @@
 
                     const addBandBtn = componentIndex === combo.components.length - 1
                         ? `<button onclick="addLteBand(${comboIndex})">+</button>`
-                        : "";
+                        : `<button style="visibility: hidden;" disabled tabindex="-1" aria-hidden="true">+</button>`;
                     const moveBandUpBtn = `<button title="Move band up" onclick="moveLteBand(${comboIndex}, ${componentIndex}, -1)" ${componentIndex === 0 ? "disabled" : ""}>↑</button>`;
                     const moveBandDownBtn = `<button title="Move band down" onclick="moveLteBand(${comboIndex}, ${componentIndex}, 1)" ${componentIndex === combo.components.length - 1 ? "disabled" : ""}>↓</button>`;
                     const removeBandBtn = `<button onclick="removeLteBand(${comboIndex}, ${componentIndex})">-</button>`;
