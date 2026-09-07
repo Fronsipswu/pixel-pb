@@ -1783,7 +1783,7 @@
 
         function openAutoGenModal() {
             document.getElementById("autoGenUlcaLabel").style.display =
-                currentMode === "ap_plmn" ? "none" : "block";
+                currentMode === "nr" ? "block" : "none";
             const lteUlcaSub = currentMode === "lte" ? "block" : "none";
             document.getElementById("autoGenFddAaLabel").style.display = lteUlcaSub;
             document.getElementById("autoGenTddAaLabel").style.display = lteUlcaSub;
@@ -2038,7 +2038,6 @@
             if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
                 throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
             }
-            const allowUlca = document.getElementById("autoGenUlca").checked;
             const allowUlcaLteFddAa = document.getElementById("autoGenFddAa").checked;
             const allowUlcaLteTddAa = document.getElementById("autoGenTddAa").checked;
             const allowUlcaLteFddTdd = document.getElementById("autoGenFddTdd").checked;
@@ -2126,12 +2125,12 @@
                 if (legalIndexesByBand.size === 0) continue; // No legal uplink
 
                 // UL variants: single-band UL always; inter-band and
-                // same-band A+A ULCA when the checkbox is enabled.
+                // same-band A+A ULCA when the policy flags allow it.
                 const ulVariants = [];
                 for (const indexes of legalIndexesByBand.values()) {
                     ulVariants.push([indexes[indexes.length - 1]]);
                 }
-                if (allowUlca) {
+                {
                     const legalBands = [...legalIndexesByBand.keys()];
                     for (let i = 0; i < legalBands.length; i++) {
                         for (let j = i + 1; j < legalBands.length; j++) {
