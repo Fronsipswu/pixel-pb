@@ -75,6 +75,25 @@
             min-width: 60px;
             text-align: center;
         }
+        /* Alternate combo rows: subtle blue tint vs the default grey.
+           Controls inside tinted cards go cyan; grey cards keep the old colors. */
+        .main-table tr.combo-row:nth-child(odd) {
+            background-color: light-dark(rgba(30, 90, 180, 0.10), rgba(80, 140, 255, 0.10));
+        }
+        .main-table tr.combo-row:nth-child(odd) .combo-table button,
+        .main-table tr.combo-row:nth-child(odd) .combo-table select,
+        .main-table tr.combo-row:nth-child(odd) .combo-table input[type='text'],
+        .main-table tr.combo-row:nth-child(odd) .combo-table input[type='number'],
+        .main-table tr.combo-row:nth-child(odd) .buttons button {
+            background-color: light-dark(#b7d3d8, #3f5a61);
+        }
+        @media (prefers-color-scheme: dark) {
+            .main-table tr.combo-row:nth-child(odd) .combo-table button:hover:enabled,
+            .main-table tr.combo-row:nth-child(odd) .buttons button:hover:enabled {
+                background-color: #4d6e76;
+                cursor: pointer;
+            }
+        }
         .combo-table {
             
             border: 0px;
@@ -158,7 +177,8 @@
             color: light-dark(var(--darkred), var(--lightred));
         }
         .color-row {
-            background-color: light-dark(#aaa, #212121) !important;
+            /* Translucent so the alternating combo tint shows through */
+            background-color: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.07)) !important;
         }
         .binarypbInfo {
             margin: 5px;
@@ -380,6 +400,39 @@
             button, select, input[type='text'], input[type='number'], input[type='file']::file-selector-button {
                 padding: 10px;
                 font-size: 14px;
+            }
+
+            /* --- LTE layout --- */
+            /* Band row full width, then the DL class / DL MIMO / UL class
+               dropdowns two-per-line instead of stacked full width. */
+            .combo-table tr.lte-comp-row {
+                display: flex;
+                flex-wrap: wrap;
+                border: none;
+            }
+            .combo-table tr.lte-comp-row > td {
+                width: auto !important;
+                flex: 1 1 46%;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 0;
+                border: none;
+            }
+            .combo-table tr.lte-comp-row > td:first-child {
+                flex-basis: 100%;
+            }
+            .combo-table tr.lte-comp-row > td select {
+                flex: 1;
+                min-width: 0;
+            }
+
+            /* --- AP PLMN layout --- */
+            .groupheader {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 4px 8px;
             }
 
         }
@@ -1185,7 +1238,7 @@
                             `<option value="${value}" ${ulValue === Number(value) ? "selected" : ""}>${label}</option>`
                     ).join("");
 
-                    innerTableHTML += `<tr>
+                    innerTableHTML += `<tr class="lte-comp-row">
                         <td width="135">
                             <input name="band-input" type="text" class="band-input" value="${component.band}"
                                 onchange="updateLteBand(${comboIndex}, ${componentIndex}, this.value)" />
