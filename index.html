@@ -519,7 +519,7 @@
             <button title="Add another band to the superset" onclick="addAutoGenRow()">+ Add band</button>
             <label id="autoGenUlcaLabel" style="display: none;">
                 <input type="checkbox" id="autoGenUlca">
-                Allow ULCA (NR uplink carrier aggregation; ULMIMO combos never get ULCA)
+                Allow ULCA (uplink carrier aggregation; ULMIMO combos never get ULCA)
             </label>
             <label id="autoGenLteCUlLabel" style="display: none;">
                 <input type="checkbox" id="autoGenLteCUl">
@@ -527,8 +527,7 @@
             </label>
             <label id="autoGenMaxCcLabel" style="display: none;">
                 Max CC: <input type="number" id="autoGenMaxCc" value="6" min="1" max="32" style="width: 60px;">
-                <span title="Maximum total component carriers per combo. For NSA (ENDC), NR and LTE carriers both count."></span>
-                (NSA counts NR+LTE)
+                <span id="autoGenMaxCcNote" style="display: none;">(NSA counts NR+LTE)</span>
             </label>
             <pre id="autoGenOutput" spellcheck="false" style="white-space: pre-wrap; max-height: 30vh; overflow: auto;"></pre>
             <button class="modalbtn" onclick="closeAutoGenModal()">Close</button>
@@ -720,20 +719,24 @@
         // losing precision. configMaskLow must never pass through Number().
         (function verifyUint64Support() {
             const probes = ["0", "9007199254740991", "9007199254740992", "18445899642336968703", "18446744073709551615"];
-            const sample = { c: [] };
             const type = lteRoot.lookupType("LteCombo");
+            let failures = 0;
             probes.forEach((value) => {
                 try {
                     const bytes = type.encode(type.fromObject({ configMaskLow: value, configMaskHigh: 0 })).finish();
                     const back = type.toObject(type.decode(bytes), { defaults: true, longs: String });
                     if (back.configMaskLow !== value) {
+                        failures++;
                         console.error(`uint64 precision lost for ${value} -> ${back.configMaskLow}`);
                     }
                 } catch (error) {
+                    failures++;
                     console.error("uint64 self-test failed:", error);
                 }
             });
-            console.log("uint64 self-test passed.");
+            console.log(failures === 0
+                ? "uint64 self-test passed."
+                : `uint64 self-test: ${failures} probe(s) failed.`);
         })();
 
         // AP PLMN mapping proto definition
@@ -934,7 +937,7 @@
             let totalRows = filteredGroups.length;
             let totalPages = rowsPerPage === Infinity
                 ? 1
-                : Math.ceil(totalRows / rowsPerPage);
+                : Math.max(1, Math.ceil(totalRows / rowsPerPage));
 
             let start = (currentPage - 1) * rowsPerPage;
             let end = start + rowsPerPage;
@@ -1187,11 +1190,23 @@
             assumedLteCarrierBandwidthMHz: 20, // LTE carriers have no bw data in NR files
             autogenMaxRows: 12,              // Superset rows cap (2^n subsets)
             autogenMaxResults: 2000,         // Generated combos cap
+            defaultMaxCc: 6,                 // Fallback for the Max CC input
         };
         // All-PLMN conf id masks applied to generated LTE combos.
         const AUTOGEN_DEFAULT_CONFIG_MASK_LOW = "18445899642336968703"; // conf id 0-63
         const AUTOGEN_DEFAULT_CONFIG_MASK_HIGH = "2097151";             // conf id 64-95
         const AUTOGEN_DEFAULT_BCS = 2147483648;                         // BCS 0
+        // Class expansion per the Shannon LTE generator: a typed class also
+        // produces every lower class in the A/C/D/E/F order (D -> A/C/D,
+        // E -> A/C/D/E, F -> A/C/D/E/F; B keeps only its own A/B variants).
+        const LTE_CLASS_EXPANSION = {
+            1: [1],             // A
+            2: [1, 2],          // B
+            3: [1, 3],          // C
+            4: [1, 3, 4],       // D
+            5: [1, 3, 4, 5],    // E
+            6: [1, 3, 4, 5, 6], // F
+        };
 
         const LTE_CLASS_LETTERS = {
             32768: "A",
@@ -1259,7 +1274,7 @@
             let totalRows = filteredGroups.length;
             let totalPages = rowsPerPage === Infinity
                 ? 1
-                : Math.ceil(totalRows / rowsPerPage);
+                : Math.max(1, Math.ceil(totalRows / rowsPerPage));
 
             let start = (currentPage - 1) * rowsPerPage;
             let end = start + rowsPerPage;
@@ -1629,10 +1644,17 @@
             }
 
             const lowBands = [...bands].filter((band) => LTE_LOW_BANDS.has(band));
-            if (lowBands.length > 1 &&
-                !(lowBands.length === 2 && lowBands.includes(20) && lowBands.includes(28))) {
+            // Allowed Low+Low DL coexistence: B20+B28 and B8+B20.
+            const allowedLowPairs = [
+                [20, 28],
+                [8, 20],
+            ];
+            const lowPairAllowed = allowedLowPairs.some(([a, b]) =>
+                lowBands.length === 2 && lowBands.includes(a) && lowBands.includes(b)
+            );
+            if (lowBands.length > 1 && !lowPairAllowed) {
                 issues.push("unsupported low-band combination " +
-                    lowBands.join("+") + ". Only 20+28 is allowed.");
+                    lowBands.join("+") + ". Only 20+28 or 8+20 is allowed.");
             }
 
             const bad4x4 = combo.components.filter((c) =>
@@ -1749,11 +1771,18 @@
 
         function openAutoGenModal() {
             document.getElementById("autoGenUlcaLabel").style.display =
-                currentMode === "nr" ? "block" : "none";
+                currentMode === "ap_plmn" ? "none" : "block";
             document.getElementById("autoGenLteCUlLabel").style.display =
                 currentMode === "nr" ? "block" : "none";
             document.getElementById("autoGenMaxCcLabel").style.display =
-                currentMode === "nr" ? "block" : "none";
+                currentMode === "ap_plmn" ? "none" : "block";
+            // LTE follows the Shannon generator's 2..7 represented-CC range;
+            // NR keeps the wider range.
+            const maxCcInput = document.getElementById("autoGenMaxCc");
+            maxCcInput.min = currentMode === "lte" ? "2" : "1";
+            maxCcInput.max = currentMode === "lte" ? "7" : "32";
+            document.getElementById("autoGenMaxCcNote").style.display =
+                currentMode === "nr" ? "inline" : "none";
             // Row shape differs per mode; reset when switching modes so NR
             // rendering never sees LTE rows (or vice versa).
             if (autoGenRowsMode !== currentMode) {
@@ -1789,6 +1818,15 @@
                 : value;
             // Switch the row controls when the band type (NR <-> LTE) changes.
             if (field === "band") renderAutoGenRows();
+            // Bands without 4x4 support default to 2x2 (LTE mode).
+            if (field === "band" && currentMode === "lte") {
+                const parsed = bandParseStr(row.band);
+                if (typeof parsed === "object" && parsed.band &&
+                    LTE_NO_4X4_BANDS.has(parsed.band) && row.mimo === 1) {
+                    row.mimo = 0;
+                    renderAutoGenRows();
+                }
+            }
         }
 
         function addAutoGenDlId(index) {
@@ -1984,14 +2022,19 @@
             if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
                 throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
             }
+            const maxCc = Math.min(7, Math.max(2,
+                parseInt(document.getElementById("autoGenMaxCc").value, 10) ||
+                DEVICE_LIMITS.defaultMaxCc));
+            const allowUlca = document.getElementById("autoGenUlca").checked;
 
-            // Per component: the typed class, plus a class A downgrade.
+            // Per component: every lower class in the expansion sequence
+            // (D -> A/C/D, E -> A/C/D/E, F -> A/C/D/E/F), like the Shannon
+            // LTE generator.
             const candidates = [];
             for (const subset of allSubsets(rows)) {
                 for (const variantSet of cartesian(subset.map((row) => {
-                    const variants = [{ band: row.band, letter: row.letter, mimo: row.mimo }];
-                    if (row.letter !== 1) variants.push({ band: row.band, letter: 1, mimo: row.mimo });
-                    return variants;
+                    const expansion = LTE_CLASS_EXPANSION[row.letter] || [row.letter];
+                    return expansion.map((letter) => ({ band: row.band, letter, mimo: row.mimo }));
                 }))) {
                     candidates.push(variantSet);
                 }
@@ -2005,29 +2048,96 @@
             let skippedInvalid = 0;
 
             for (const variantSet of candidates) {
-                const components = variantSet.map((v) => ({
-                    band: v.band,
-                    bwClassMimoDl: (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1) > 0
+                const components = variantSet.map((v) => {
+                    let bwClassMimoDl = (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1) > 0
                         ? (v.letter === 1 ? 32768 : v.letter === 2 ? 16384 : v.letter === 3 ? 8192 :
                            v.letter === 4 ? 4096 : v.letter === 5 ? 2048 : 1024) |
                           (v.mimo === 1 ? 1 : 0)
-                        : 32768,
-                    bwClassMimoUl: 0,
-                }));
+                        : 32768;
+                    // Bands without 4x4 support automatically become 2x2,
+                    // like the Shannon LTE generator.
+                    if (LTE_NO_4X4_BANDS.has(v.band) && (bwClassMimoDl & 1)) {
+                        bwClassMimoDl &= ~1;
+                    }
+                    return { band: v.band, bwClassMimoDl, bwClassMimoUl: 0 };
+                });
+
+                // Represented carrier count must stay within [2, maxCc].
+                const representedCc = components.reduce((sum, c) => {
+                    return sum + (LTE_CLASS_CC_COUNT[lteClassLetter(c.bwClassMimoDl)] || 1);
+                }, 0);
+                if (representedCc < 2 || representedCc > maxCc) {
+                    skippedInvalid++;
+                    continue;
+                }
+
+                // Minimally downgrade 4x4 components (largest first) when the
+                // 24 spatial stream limit is exceeded, like the Shannon LTE
+                // editor, instead of rejecting the candidate outright.
+                const totalStreams = () => components.reduce((sum, c) => {
+                    const value = c.bwClassMimoDl || 0;
+                    if (value <= 0) return sum;
+                    return sum + (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) * ((value & 1) ? 4 : 2);
+                }, 0);
+                while (totalStreams() > 24) {
+                    const candidates4x4 = components
+                        .filter((c) => (c.bwClassMimoDl || 0) > 0 && (c.bwClassMimoDl & 1))
+                        .sort((a, b) =>
+                            (LTE_CLASS_CC_COUNT[lteClassLetter(b.bwClassMimoDl)] || 1) -
+                            (LTE_CLASS_CC_COUNT[lteClassLetter(a.bwClassMimoDl)] || 1));
+                    if (candidates4x4.length === 0) break;
+                    candidates4x4[0].bwClassMimoDl &= ~1;
+                }
 
                 const bands = new Set(components.map((c) => c.band));
                 const blocked = autogenBlockedBands(bands);
-                const ulOptions = components.filter((c) => !blocked.has(c.band));
-                if (ulOptions.length === 0) continue; // No legal uplink
 
-                for (const ulBand of ulOptions.map((c) => c.band)) {
+                // Group the legal component indexes per band. Single-band UL
+                // uses the last occurrence; same-band A+A ULCA (when enabled)
+                // uses the last two occurrences of a repeated band.
+                const legalIndexesByBand = new Map();
+                components.forEach((c, index) => {
+                    if (!blocked.has(c.band)) {
+                        if (!legalIndexesByBand.has(c.band)) {
+                            legalIndexesByBand.set(c.band, []);
+                        }
+                        legalIndexesByBand.get(c.band).push(index);
+                    }
+                });
+                if (legalIndexesByBand.size === 0) continue; // No legal uplink
+
+                // UL variants: single-band UL always; inter-band and
+                // same-band A+A ULCA when the checkbox is enabled.
+                const ulVariants = [];
+                for (const indexes of legalIndexesByBand.values()) {
+                    ulVariants.push([indexes[indexes.length - 1]]);
+                }
+                if (allowUlca) {
+                    const legalBands = [...legalIndexesByBand.keys()];
+                    for (let i = 0; i < legalBands.length; i++) {
+                        for (let j = i + 1; j < legalBands.length; j++) {
+                            if (!autogenValidUlPair(legalBands[i], legalBands[j])) continue;
+                            const a = legalIndexesByBand.get(legalBands[i]);
+                            const b = legalIndexesByBand.get(legalBands[j]);
+                            ulVariants.push([a[a.length - 1], b[b.length - 1]]);
+                        }
+                    }
+                    for (const indexes of legalIndexesByBand.values()) {
+                        if (indexes.length >= 2) {
+                            ulVariants.push([indexes[indexes.length - 2], indexes[indexes.length - 1]]);
+                        }
+                    }
+                }
+
+                for (const ulSlots of ulVariants) {
+                    const slotSet = new Set(ulSlots);
                     const combo = {
-                        components: components.map((c) => ({
+                        components: components.map((c, index) => ({
                             ...c,
-                            bwClassMimoUl: c.band === ulBand ? 32768 : 0,
+                            bwClassMimoUl: slotSet.has(index) ? 32768 : 0,
                         })),
                         // Required proto2 fields: same all-PLMN policy as "+ Add combo".
-                        bcs: 2147483648,
+                        bcs: AUTOGEN_DEFAULT_BCS,
                         configMaskLow: AUTOGEN_DEFAULT_CONFIG_MASK_LOW,
                         configMaskHigh: AUTOGEN_DEFAULT_CONFIG_MASK_HIGH,
                     };
@@ -2514,7 +2624,7 @@
             let totalRows = filteredGroups.length;
             let totalPages = rowsPerPage === Infinity
                 ? 1
-                : Math.ceil(totalRows / rowsPerPage);
+                : Math.max(1, Math.ceil(totalRows / rowsPerPage));
 
             let start = (currentPage - 1) * rowsPerPage;
             let end = start + rowsPerPage;
@@ -3007,7 +3117,7 @@
         function changePage(direction) {
             let totalPages = rowsPerPage === Infinity
                 ? 1
-                : Math.ceil(filteredGroups.length / rowsPerPage);
+                : Math.max(1, Math.ceil(filteredGroups.length / rowsPerPage));
 
             currentPage += direction;
             if (currentPage < 1) currentPage = 1;
@@ -3575,8 +3685,10 @@
         // Decodes the buffer for the expected type. Globals are only
         // committed after a fully successful decode, so a failure never
         // leaves a mix of old data and new filename/mode (transactional).
-        function decodeUeCapsBuffer(buffer, sourceName) {
-            const type = detectPbMode(sourceName);
+        // expectedMode overrides filename detection (used when restoring a
+        // cached session whose stripped filename no longer matches).
+        function decodeUeCapsBuffer(buffer, sourceName, expectedMode) {
+            const type = expectedMode || detectPbMode(sourceName);
 
             if (type === "ap_plmn") {
                 try {
@@ -3874,6 +3986,7 @@
 
             const base64String = localStorage.getItem('protobufData');
             const fileName = localStorage.getItem('fileName');
+            const savedMode = localStorage.getItem('pbMode');
             if (!base64String) {
                 console.log("No data found in localStorage.");
                 return;
@@ -3883,9 +3996,13 @@
             // Update filename field
             document.getElementById("filenameInput").value = originalFilename || "default_filename";
             console.log(`${originalFilename} cache pb loaded from localStorage.`);
-            // Decode the protobuf data using the decoded binary buffer
-            // (decodeUeCapsBuffer auto-detects NR vs LTE).
-            if (!decodeUeCapsBuffer(base64ToBytes(base64String), originalFilename || "cached file")) {
+            // The cached filename has its extension stripped, so filename
+            // detection is unreliable here — use the saved pbMode instead.
+            const buffer = base64ToBytes(base64String);
+            const decoded = savedMode
+                ? decodeUeCapsBuffer(buffer, originalFilename || "cached file", savedMode)
+                : decodeUeCapsBuffer(buffer, originalFilename || "cached file");
+            if (!decoded) {
                 console.error("Error loading or decoding data.");
             }
         }
