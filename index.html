@@ -1716,9 +1716,11 @@
         function updateAutoGenRow(index, field, value) {
             const row = autoGenRows[index];
             if (!row) return;
-            row[field] = (field === "mimo" || field === "ulId" || field === "ulMimo")
+            row[field] = (field === "mimo" || field === "ulId" || field === "ulMimo" || field === "bwClass")
                 ? (parseInt(value, 10) || 0)
                 : value;
+            // Switch the row controls when the band type (NR <-> LTE) changes.
+            if (field === "band") renderAutoGenRows();
         }
 
         function addAutoGenDlId(index) {
@@ -1754,8 +1756,35 @@
             } else {
                 const ulNo = autoGenUlOptions(false);
                 const ulYes = autoGenUlOptions(true);
-                container.innerHTML = autoGenRows.map((row, index) => `
-                    <div class="autogen-row">
+                container.innerHTML = autoGenRows.map((row, index) => {
+                    const parsed = bandParseStr(row.band);
+                    const isLteBand = typeof parsed === "object" && parsed.band &&
+                        parsed.band <= 10000;
+
+                    // LTE (ENDC anchor) rows pick MIMO type and BW class,
+                    // like the main UI.
+                    if (isLteBand) {
+                        if (!row.mimo) row.mimo = 1; // Default 4x4
+                        const classOptions = ["A", "B", "C", "D", "E", "F"].map((letter, i) => {
+                            const value = i + 1;
+                            const selected = (row.bwClass || parsed.bwClassDL || 1) === value ? "selected" : "";
+                            return `<option value="${value}" ${selected}>${letter}</option>`;
+                        }).join("");
+                        const mimoOptions = ["4x4", "2x2", "4+2", "2+2"].map((label, i) => {
+                            const value = i + 1;
+                            return `<option value="${value}" ${row.mimo === value ? "selected" : ""}>DL MIMO: ${label}</option>`;
+                        }).join("");
+                        return `<div class="autogen-row">
+                            <input type="text" class="band-input" value="${escapeHtml(row.band)}"
+                                onchange="updateAutoGenRow(${index}, 'band', this.value)">
+                            <span>LTE:</span>
+                            <select title="DL MIMO type" onchange="updateAutoGenRow(${index}, 'mimo', this.value)">${mimoOptions}</select>
+                            <select title="DL bandwidth class" onchange="updateAutoGenRow(${index}, 'bwClass', this.value)">${classOptions}</select>
+                            <button title="Remove band" onclick="removeAutoGenRow(${index})">-</button>
+                        </div>`;
+                    }
+
+                    return `<div class="autogen-row">
                         <input type="text" class="band-input" value="${escapeHtml(row.band)}"
                             onchange="updateAutoGenRow(${index}, 'band', this.value)">
                         <span>DL:</span>
@@ -1781,7 +1810,8 @@
                             ).join("")}
                         </select>
                         <button title="Remove band" onclick="removeAutoGenRow(${index})">-</button>
-                    </div>`).join("");
+                    </div>`;
+                }).join("");
             }
         }
 
@@ -1954,8 +1984,10 @@
                 }
                 return {
                     band: Number(parsed.band),
-                    letter: parsed.bwClassDL || 1, // Only used for LTE (ENDC) bands
-                    mimo: row.mimo || 0,
+                    // LTE (ENDC) rows: BW class from the dropdown, falling
+                    // back to a typed class letter (e.g. "3C").
+                    letter: row.bwClass || parsed.bwClassDL || 1,
+                    mimo: row.mimo || 1,
                     dlIds: (row.dlIds || []).filter((id) => id > 0),
                     ulIds: row.ulId > 0 ? [row.ulId] : null,
                     ulMimo: row.ulMimo || 0,
@@ -2076,69 +2108,99 @@
                 const bands = new Set(entries.map((e) => Number(e.cc.band)));
                 const blocked = autogenBlockedBands(bands);
 
-                // Build the UL variant list: each variant assigns uplink to
-                // one band (single) or a pair of bands (ULCA).
+                // One entry per distinct band, taken from its LAST occurrence:
+                // repeated bands always carry uplink on their final component.
+                const lastByBand = new Map();
+                entries.forEach((e) => lastByBand.set(Number(e.cc.band), e));
+                const legalBands = [...lastByBand.entries()]
+                    .filter(([band]) => !blocked.has(band))
+                    .map(([band, e]) => ({ band, row: e.row, isLte: e.isLte }));
+
+                // Build the UL variant list as band-slot lists.
+                // ENDC always uses exactly one LTE + one NR uplink (never a
+                // single uplink). SA uses single-band uplink plus optional
+                // ULCA pairs; ULMIMO variants are SA-only, single-uplink only.
                 const ulVariants = [];
-                for (const entry of entries) {
-                    if (blocked.has(Number(entry.cc.band))) continue;
-                    ulVariants.push([{ entry, ulmimo: false }]);
-                    // ULMIMO variants: SA only, and never combined with ULCA.
-                    if (isSa && !entry.isLte && entry.row.ulMimo > 0) {
-                        ulVariants.push([{ entry, ulmimo: true }]);
+                for (const { band, row, isLte } of legalBands) {
+                    if (isSa) {
+                        ulVariants.push([{ band, ulmimo: false }]);
+                        if (!isLte && row.ulMimo > 0) {
+                            ulVariants.push([{ band, ulmimo: true }]);
+                        }
                     }
                 }
-                if (allowUlca) {
-                    if (isSa) {
-                        const legal = entries.filter((e) => !blocked.has(Number(e.cc.band)));
-                        for (let i = 0; i < legal.length; i++) {
-                            for (let j = i + 1; j < legal.length; j++) {
-                                if (!autogenValidUlPair(Number(legal[i].cc.band), Number(legal[j].cc.band))) continue;
-                                ulVariants.push([{ entry: legal[i], ulmimo: false }, { entry: legal[j], ulmimo: false }]);
+                if (isSa && allowUlca && legalBands.length > 1) {
+                    for (let i = 0; i < legalBands.length; i++) {
+                        for (let j = i + 1; j < legalBands.length; j++) {
+                            const a = legalBands[i].band;
+                            const b = legalBands[j].band;
+                            if (autogenValidUlPair(a, b)) {
+                                ulVariants.push([{ band: a, ulmimo: false }, { band: b, ulmimo: false }]);
                             }
                         }
-                    } else {
-                        // NSA ULCA is always one LTE + one NR uplink; SDL rules ignored.
-                        const lteEntries = entries.filter((e) => e.isLte);
-                        const nrEntries = entries.filter((e) => !e.isLte);
-                        for (const lte of lteEntries) {
-                            for (const nr of nrEntries) {
-                                ulVariants.push([{ entry: lte, ulmimo: false }, { entry: nr, ulmimo: false }]);
-                            }
+                    }
+                    // Same-band A+A ULCA when the candidate repeats a band.
+                    const occurrences = new Map();
+                    entries.forEach((e) => {
+                        const band = Number(e.cc.band);
+                        if (!blocked.has(band)) {
+                            occurrences.set(band, (occurrences.get(band) || 0) + 1);
+                        }
+                    });
+                    occurrences.forEach((count, band) => {
+                        if (count >= 2 && autogenValidUlPair(band, band)) {
+                            ulVariants.push([{ band, ulmimo: false }, { band, ulmimo: false }]);
+                        }
+                    });
+                }
+                if (!isSa) {
+                    const lteBands = legalBands.filter((b) => b.isLte).map((b) => b.band);
+                    const nrBands = legalBands.filter((b) => !b.isLte).map((b) => b.band);
+                    for (const lteBand of lteBands) {
+                        for (const nrBand of nrBands) {
+                            ulVariants.push([{ band: lteBand, ulmimo: false }, { band: nrBand, ulmimo: false }]);
                         }
                     }
                 }
                 if (ulVariants.length === 0) continue;
 
                 for (const variant of ulVariants) {
+                    // Assign UL slots to the LAST occurrence(s) of each band.
+                    const slotCounts = new Map();
+                    variant.forEach((slot) => {
+                        slotCounts.set(slot.band, (slotCounts.get(slot.band) || 0) + 1);
+                    });
+                    const isUlca = variant.length > 1;
+                    const isUlmimoSingle = variant.length === 1 && variant[0].ulmimo;
+
+                    const remaining = new Map(slotCounts);
                     const combo = {
-                    cc: entries.map((entry) => {
-                        const v = variant.find((x) => x.entry === entry);
-                        const isUl = !!v;
-                        if (entry.isLte) {
+                        cc: entries.slice().reverse().map((entry) => {
+                            const band = Number(entry.cc.band);
+                            const isUl = (remaining.get(band) || 0) > 0;
+                            if (isUl) remaining.set(band, remaining.get(band) - 1);
+                            if (entry.isLte) {
                                 return {
                                     band: entry.cc.band,
                                     bwClassDL: entry.cc.bwClassDL,
-                                    bwClassUL: v ? 1 : 0, // Class A
+                                    bwClassUL: isUl ? 1 : 0, // Always class A
                                     dlFeatureIndex: entry.cc.dlFeatureIndex,
-                                    ulFeatureIndex: v ? 1 : 0, // 2x2
+                                    ulFeatureIndex: isUl ? 2 : 0, // Always 1x1
                                 };
                             }
                             const baseUlIds = Array.from(entry.cc.ulFeaturePerCCIds || []);
-                            let ulIds;
-                            if (v) {
-                                if (variant.length > 1) {
-                                    // ULCA uplink is always class A on both bands.
-                                    ulIds = [baseUlIds[0]].filter(Boolean);
-                                } else if (v.ulmimo) {
-                                    // ULMIMO variant carries only the ULMIMO feature set.
-                                    ulIds = [entry.row.ulMimo];
+                            let ulIds = null;
+                            if (isUl) {
+                                if (isUlca) {
+                                    ulIds = [baseUlIds[0]].filter(Boolean); // ULCA UL is class A
+                                } else if (isUlmimoSingle) {
+                                    ulIds = [entry.row.ulMimo]; // ULMIMO replaces the UL set
                                 } else {
                                     ulIds = baseUlIds;
                                 }
                             }
-                            const cc = buildNrCc(entry.row.band, entry.dlIds, isUl ? ulIds : []);
-                            return cc;
-                        }),
+                            return buildNrCc(entry.row.band, entry.dlIds, isUl ? ulIds : []);
+                        }).reverse(),
                         bitMask: 0,
                     };
                     const key = autogenKey(combo);
