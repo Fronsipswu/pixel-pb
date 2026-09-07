@@ -1607,20 +1607,22 @@
             decodedData.ComboGroups.forEach((group, groupIndex) => {
                 group.combo.forEach((combo, comboIndex) => {
                     const where = `group ${groupIndex + 1}, combo ${comboIndex + 1}`;
+                    const summary = nrComboSummary(combo);
 
                     const signature = combo.cc
                         .map((cc) => `${Number(cc.band) || 0}/${Number(cc.bwClassDL) || 0}/${Number(cc.bwClassUL) || 0}`)
                         .sort()
                         .join("|");
                     if (seen.has(signature)) {
-                        issues.push(`Duplicate: ${where} duplicates ${seen.get(signature)}.`);
+                        const first = seen.get(signature);
+                        issues.push(`Duplicate: ${where} (${summary}) duplicates ${first.where} (${first.summary}).`);
                     } else {
-                        seen.set(signature, where);
+                        seen.set(signature, { where, summary });
                     }
 
                     const hasUl = combo.cc.some((cc) => (Number(cc.bwClassUL) || 0) > 0);
                     if (!hasUl) {
-                        issues.push(`${where}: uplink is missing.`);
+                        issues.push(`${where} (${summary}): uplink is missing.`);
                     }
                 });
             });
@@ -1728,7 +1730,7 @@
                     .sort()
                     .join("|");
                 if (seen.has(signature)) {
-                    issues.push(`Combo ${num}: duplicate of combo ${seen.get(signature)}.`);
+                    issues.push(`Combo ${num}: duplicate of combo ${seen.get(signature)} (${lteComboSummary(combo)}).`);
                 } else {
                     seen.set(signature, num);
                 }
