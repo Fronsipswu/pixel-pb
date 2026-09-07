@@ -715,6 +715,27 @@
         const lteRoot = protobuf.parse(lteProtoDefinition).root;
         const UeCapsLte = lteRoot.lookupType("LteUeCaps");
 
+        // Startup self-test: prove the loaded protobufjs bundle round-trips
+        // uint64 values (e.g. the all-PLMN mask 18445899642336968703) without
+        // losing precision. configMaskLow must never pass through Number().
+        (function verifyUint64Support() {
+            const probes = ["0", "9007199254740991", "9007199254740992", "18445899642336968703", "18446744073709551615"];
+            const sample = { c: [] };
+            const type = lteRoot.lookupType("LteCombo");
+            probes.forEach((value) => {
+                try {
+                    const bytes = type.encode(type.fromObject({ configMaskLow: value, configMaskHigh: 0 })).finish();
+                    const back = type.toObject(type.decode(bytes), { defaults: true, longs: String });
+                    if (back.configMaskLow !== value) {
+                        console.error(`uint64 precision lost for ${value} -> ${back.configMaskLow}`);
+                    }
+                } catch (error) {
+                    console.error("uint64 self-test failed:", error);
+                }
+            });
+            console.log("uint64 self-test passed.");
+        })();
+
         // AP PLMN mapping proto definition
         const apPlmnProtoDefinition = `
             syntax = "proto2";
@@ -1157,6 +1178,21 @@
         // LTE (ShannonLteUECap) support
         // ------------------------------------------------------------------
 
+        // Domain limits used by the auto-generators. Values follow the
+        // Shannon LTE editor's rules and the owner's policy for this fork;
+        // adjust here rather than inside the generation code.
+        const DEVICE_LIMITS = {
+            maxDlBandwidthMHz: 340,          // Absolute DL bandwidth cap (SA + NSA)
+            maxEndcNrCarriers: 3,            // Max NR carriers in an ENDC combo
+            assumedLteCarrierBandwidthMHz: 20, // LTE carriers have no bw data in NR files
+            autogenMaxRows: 12,              // Superset rows cap (2^n subsets)
+            autogenMaxResults: 2000,         // Generated combos cap
+        };
+        // All-PLMN conf id masks applied to generated LTE combos.
+        const AUTOGEN_DEFAULT_CONFIG_MASK_LOW = "18445899642336968703"; // conf id 0-63
+        const AUTOGEN_DEFAULT_CONFIG_MASK_HIGH = "2097151";             // conf id 64-95
+        const AUTOGEN_DEFAULT_BCS = 2147483648;                         // BCS 0
+
         const LTE_CLASS_LETTERS = {
             32768: "A",
             16384: "B",
@@ -1248,9 +1284,12 @@
             }
 
             const paginatedCombos = filteredGroups.slice(start, end);
+            // Filtered rows are not at their original array positions, so map
+            // every visible row back to its real index in decodedData.combos.
+            globalIndexMap = filteredGroups.map((combo) => decodedData.combos.indexOf(combo));
 
             paginatedCombos.forEach((combo, localComboIndex) => {
-                const comboIndex = start + localComboIndex;
+                const comboIndex = globalIndexMap[start + localComboIndex];
 
                 let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
                     <div class="groupheader">
@@ -1443,6 +1482,12 @@
         }
 
         function removeLteBand(comboIndex, componentIndex) {
+            // A combo with zero components cannot be edited back (the + button
+            // lives on the last component row), so block removing the last one.
+            if (decodedData.combos[comboIndex].components.length <= 1) {
+                alert("A combo needs at least one band.");
+                return;
+            }
             decodedData.combos[comboIndex].components.splice(componentIndex, 1);
             generateTable(decodedData);
         }
@@ -1561,6 +1606,82 @@
         const LTE_NO_4X4_BANDS = new Set([...LTE_LOW_BANDS, 21]);
         const LTE_CLASS_CC_COUNT = { A: 1, B: 2, C: 2, D: 3, E: 4, F: 5 };
 
+        // Per-combo LTE rules, shared by the validator and the auto-generator
+        // so both apply the same domain policy. Returns a list of reason
+        // strings (empty = combo is valid). Does not check duplicates.
+        function lteComboIssues(combo) {
+            const issues = [];
+
+            const bands = new Set(combo.components.map((c) => Number(c.band) || 0));
+            const ulBands = new Set(
+                combo.components
+                    .filter((c) => (Number(c.bwClassMimoUl) || 0) > 0)
+                    .map((c) => Number(c.band) || 0)
+            );
+
+            if (bands.has(7) && bands.has(38) && (ulBands.has(7) || ulBands.has(38))) {
+                issues.push("bands 7 and 38 coexist, but uplink is assigned to band 7 or 38.");
+            }
+
+            const sdlUl = [...ulBands].filter((band) => LTE_SDL_BANDS.has(band));
+            if (sdlUl.length > 0) {
+                issues.push("SDL cannot have uplink: " + sdlUl.join(", ") + ".");
+            }
+
+            const lowBands = [...bands].filter((band) => LTE_LOW_BANDS.has(band));
+            if (lowBands.length > 1 &&
+                !(lowBands.length === 2 && lowBands.includes(20) && lowBands.includes(28))) {
+                issues.push("unsupported low-band combination " +
+                    lowBands.join("+") + ". Only 20+28 is allowed.");
+            }
+
+            const bad4x4 = combo.components.filter((c) =>
+                LTE_NO_4X4_BANDS.has(Number(c.band) || 0) &&
+                ((Number(c.bwClassMimoDl) || 0) & 1)
+            );
+            if (bad4x4.length > 0) {
+                issues.push("4x4 DL MIMO assigned to unsupported band(s): " +
+                    bad4x4.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoDl) || 0)}`).join(", ") + ".");
+            }
+
+            let spatialStreams = 0;
+            combo.components.forEach((c) => {
+                const value = Number(c.bwClassMimoDl) || 0;
+                if (value <= 0) return;
+                spatialStreams += (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) *
+                    ((value & 1) ? 4 : 2);
+            });
+            if (spatialStreams > 24) {
+                issues.push(`${spatialStreams} DL spatial streams exceeds the limit of 24.`);
+            }
+
+            const excessUl = combo.components.filter((c) => {
+                const value = Number(c.bwClassMimoUl) || 0;
+                return value > 0 && ["E", "F"].includes(lteClassLetter(value));
+            });
+            if (excessUl.length > 0) {
+                issues.push("UL class exceeds D: " +
+                    excessUl.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoUl) || 0)}`).join(", ") + ".");
+            }
+
+            if (ulBands.size === 0) {
+                const blocked = new Set(LTE_SDL_BANDS);
+                if (bands.has(7) && bands.has(38)) {
+                    blocked.add(7);
+                    blocked.add(38);
+                }
+                const hasLegalUlBand = combo.components.some((c) =>
+                    (Number(c.bwClassMimoDl) || 0) > 0 &&
+                    !blocked.has(Number(c.band) || 0)
+                );
+                issues.push(hasLegalUlBand
+                    ? "uplink is missing."
+                    : "uplink band unavailable (SDL-only combo).");
+            }
+
+            return issues;
+        }
+
         function validateLteCombos() {
             const issues = [];
             const seen = new Map();
@@ -1578,72 +1699,9 @@
                     seen.set(signature, num);
                 }
 
-                const bands = new Set(combo.components.map((c) => Number(c.band) || 0));
-                const ulBands = new Set(
-                    combo.components
-                        .filter((c) => (Number(c.bwClassMimoUl) || 0) > 0)
-                        .map((c) => Number(c.band) || 0)
-                );
-
-                if (bands.has(7) && bands.has(38) && (ulBands.has(7) || ulBands.has(38))) {
-                    issues.push(`Combo ${num}: bands 7 and 38 coexist, but uplink is assigned to band 7 or 38.`);
-                }
-
-                const sdlUl = [...ulBands].filter((band) => LTE_SDL_BANDS.has(band));
-                if (sdlUl.length > 0) {
-                    issues.push(`Combo ${num}: SDL cannot have uplink: ${sdlUl.join(", ")}.`);
-                }
-
-                const lowBands = [...bands].filter((band) => LTE_LOW_BANDS.has(band));
-                if (lowBands.length > 1 &&
-                    !(lowBands.length === 2 && lowBands.includes(20) && lowBands.includes(28))) {
-                    issues.push(`Combo ${num}: unsupported low-band combination ` +
-                        lowBands.join("+") + ". Only 20+28 is allowed.");
-                }
-
-                const bad4x4 = combo.components.filter((c) =>
-                    LTE_NO_4X4_BANDS.has(Number(c.band) || 0) &&
-                    ((Number(c.bwClassMimoDl) || 0) & 1)
-                );
-                if (bad4x4.length > 0) {
-                    issues.push(`Combo ${num}: 4x4 DL MIMO assigned to unsupported band(s): ` +
-                        bad4x4.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoDl) || 0)}`).join(", ") + ".");
-                }
-
-                let spatialStreams = 0;
-                combo.components.forEach((c) => {
-                    const value = Number(c.bwClassMimoDl) || 0;
-                    if (value <= 0) return;
-                    spatialStreams += (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) *
-                        ((value & 1) ? 4 : 2);
+                lteComboIssues(combo).forEach((reason) => {
+                    issues.push(`Combo ${num}: ${reason}`);
                 });
-                if (spatialStreams > 24) {
-                    issues.push(`Combo ${num}: ${spatialStreams} DL spatial streams exceeds the limit of 24.`);
-                }
-
-                const excessUl = combo.components.filter((c) => {
-                    const value = Number(c.bwClassMimoUl) || 0;
-                    return value > 0 && ["E", "F"].includes(lteClassLetter(value));
-                });
-                if (excessUl.length > 0) {
-                    issues.push(`Combo ${num}: UL class exceeds D: ` +
-                        excessUl.map((c) => `${c.band}${lteClassLetter(Number(c.bwClassMimoUl) || 0)}`).join(", ") + ".");
-                }
-
-                if (ulBands.size === 0) {
-                    const blocked = new Set(LTE_SDL_BANDS);
-                    if (bands.has(7) && bands.has(38)) {
-                        blocked.add(7);
-                        blocked.add(38);
-                    }
-                    const hasLegalUlBand = combo.components.some((c) =>
-                        (Number(c.bwClassMimoDl) || 0) > 0 &&
-                        !blocked.has(Number(c.band) || 0)
-                    );
-                    issues.push(hasLegalUlBand
-                        ? `Combo ${num}: uplink is missing.`
-                        : `Combo ${num}: uplink band unavailable (SDL-only combo).`);
-                }
             });
 
             return issues;
@@ -1654,6 +1712,7 @@
         // ------------------------------------------------------------------
 
         let autoGenRows = [];
+        let autoGenRowsMode = null; // Mode the rows were built for
 
         function defaultAutoGenRow() {
             if (currentMode === "lte") return { band: "1A", mimo: 1 };
@@ -1695,7 +1754,12 @@
                 currentMode === "nr" ? "block" : "none";
             document.getElementById("autoGenMaxCcLabel").style.display =
                 currentMode === "nr" ? "block" : "none";
-            if (autoGenRows.length === 0) {
+            // Row shape differs per mode; reset when switching modes so NR
+            // rendering never sees LTE rows (or vice versa).
+            if (autoGenRowsMode !== currentMode) {
+                autoGenRows = [defaultAutoGenRow()];
+                autoGenRowsMode = currentMode;
+            } else if (autoGenRows.length === 0) {
                 autoGenRows.push(defaultAutoGenRow());
             }
             renderAutoGenRows();
@@ -1750,10 +1814,9 @@
                     <div class="autogen-row">
                         <input type="text" class="band-input" value="${escapeHtml(row.band)}"
                             onchange="updateAutoGenRow(${index}, 'band', this.value)">
-                        <select onchange="updateAutoGenRow(${index}, 'mimo', this.value)">
-                            ${["None", "4x4", "2x2", "4+2", "2+2"].map((label, mimo) =>
-                                `<option value="${mimo}" ${row.mimo === mimo ? "selected" : ""}>DL MIMO: ${label}</option>`
-                            ).join("")}
+                        <select title="Standalone LTE files only encode the 4x4 bit; 2x2 is the default" onchange="updateAutoGenRow(${index}, 'mimo', this.value)">
+                            <option value="0" ${row.mimo === 0 ? "selected" : ""}>DL MIMO: 2x2</option>
+                            <option value="1" ${row.mimo === 1 ? "selected" : ""}>DL MIMO: 4x4</option>
                         </select>
                         <button title="Remove band" onclick="removeAutoGenRow(${index})">-</button>
                     </div>`).join("");
@@ -1918,6 +1981,9 @@
                 return { band: parsed.band, letter: parsed.bwClassDL, mimo: row.mimo || 0 };
             });
             if (rows.length === 0) throw new Error("Add at least one band.");
+            if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
+                throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
+            }
 
             // Per component: the typed class, plus a class A downgrade.
             const candidates = [];
@@ -1936,6 +2002,7 @@
             const newCombos = [];
             const skippedList = [];
             let skipped = 0;
+            let skippedInvalid = 0;
 
             for (const variantSet of candidates) {
                 const components = variantSet.map((v) => ({
@@ -1959,6 +2026,10 @@
                             ...c,
                             bwClassMimoUl: c.band === ulBand ? 32768 : 0,
                         })),
+                        // Required proto2 fields: same all-PLMN policy as "+ Add combo".
+                        bcs: 2147483648,
+                        configMaskLow: AUTOGEN_DEFAULT_CONFIG_MASK_LOW,
+                        configMaskHigh: AUTOGEN_DEFAULT_CONFIG_MASK_HIGH,
                     };
                     const key = autogenKey(combo);
                     if (existing.has(key) || seen.has(key)) {
@@ -1966,9 +2037,14 @@
                         if (skippedList.length < 40) skippedList.push(lteComboSummary(combo));
                         continue;
                     }
+                    // Do not generate combos the validator would reject.
+                    if (lteComboIssues(combo).length > 0) {
+                        skippedInvalid++;
+                        continue;
+                    }
                     seen.add(key);
                     newCombos.push(combo);
-                    if (newCombos.length > 2000) {
+                    if (newCombos.length > DEVICE_LIMITS.autogenMaxResults) {
                         throw new Error("Too many combinations; use fewer bands or classes.");
                     }
                 }
@@ -1976,8 +2052,11 @@
 
             newCombos.slice().reverse().forEach((combo) => decodedData.combos.unshift(combo));
             generateTable(decodedData);
-            return `Generated ${newCombos.length} combos (${skipped} skipped as duplicates)` +
-                (skippedList.length ? ", already in the file:\n" + skippedList.join("\n") : ".");
+            let summary = `Generated ${newCombos.length} combos (${skipped} skipped as duplicates`;
+            if (skippedInvalid > 0) summary += `, ${skippedInvalid} skipped as invalid`;
+            summary += ")";
+            if (skippedList.length) summary += ", already in the file:\n" + skippedList.join("\n");
+            return summary;
         }
 
         function autoGenerateNr() {
@@ -2003,6 +2082,9 @@
             const nrRows = rows.filter((row) => row.band > 10000);
             if (nrRows.length === 0) {
                 throw new Error("Add at least one NR band (e.g. n78).");
+            }
+            if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
+                throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
             }
             nrRows.forEach((row) => {
                 if (row.dlIds.length === 0) {
@@ -2079,8 +2161,9 @@
             let skipped = 0;
             let skippedLimits = 0;
 
-            const maxCc = parseInt(document.getElementById("autoGenMaxCc").value, 10) || 6;
-            const maxBw = 340; // Absolute DL bandwidth cap (MHz), SA and NSA alike
+            const maxCc = parseInt(document.getElementById("autoGenMaxCc").value, 10) ||
+                DEVICE_LIMITS.defaultMaxCc;
+            const maxBw = DEVICE_LIMITS.maxDlBandwidthMHz;
 
             for (const candidate of candidates) {
                 // Hard limits: ENDC carries at most 3 NR carriers, the total
@@ -2092,7 +2175,7 @@
                     return sum + (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1);
                 }, 0);
                 const totalCc = nrCarriers + lteCarriers;
-                if (candidate.lteSubset.length > 0 && nrCarriers > 3) {
+                if (candidate.lteSubset.length > 0 && nrCarriers > DEVICE_LIMITS.maxEndcNrCarriers) {
                     skippedLimits++;
                     continue;
                 }
@@ -2111,7 +2194,7 @@
                         totalBw += Number(featureSet && featureSet.maxBw) || 0;
                     });
                 });
-                totalBw += lteCarriers * 20;
+                totalBw += lteCarriers * DEVICE_LIMITS.assumedLteCarrierBandwidthMHz;
                 if (totalBw > maxBw) {
                     skippedLimits++;
                     continue;
@@ -2272,7 +2355,7 @@
                         },
                         combo: [combo],
                     });
-                    if (newGroups.length > 2000) {
+                    if (newGroups.length > DEVICE_LIMITS.autogenMaxResults) {
                         throw new Error("Too many combinations; use fewer bands or feature sets.");
                     }
                 }
@@ -2450,9 +2533,12 @@
                 </tr>`;
 
             const paginatedEntries = filteredGroups.slice(start, end);
+            // Filtered rows are not at their original array positions, so map
+            // every visible row back to its real index in decodedData.ids.
+            globalIndexMap = filteredGroups.map((entry) => decodedData.ids.indexOf(entry));
 
             paginatedEntries.forEach((entry, localIndex) => {
-                const entryIndex = start + localIndex;
+                const entryIndex = globalIndexMap[start + localIndex];
 
                 let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
                     <div class="groupheader">
@@ -2537,6 +2623,11 @@
         }
 
         function removeApPlmnPlmn(entryIndex, plmnIndex) {
+            // Keep at least one PLMN so the mapping stays editable.
+            if (decodedData.ids[entryIndex].plmn.length <= 1) {
+                alert("A mapping needs at least one PLMN. Remove the whole mapping instead.");
+                return;
+            }
             decodedData.ids[entryIndex].plmn.splice(plmnIndex, 1);
             generateTable(decodedData);
         }
@@ -3460,12 +3551,13 @@
         // File handling and recompile functions
         let decodedData;
         let originalFilename;
-        let currentMode = "nr"; // "nr" or "lte"
+        let currentMode = "nr"; // "nr", "lte" or "ap_plmn"
 
         // Filename-based binarypb type detection:
-        //   lte_<numbers>.binarypb  -> LTE
-        //   ap_plmn_mapping.binarypb -> not supported
-        //   anything else           -> NR
+        //   lte_<numbers>.binarypb   -> LTE
+        //   ap_plmn_mapping.binarypb -> AP PLMN mapping
+        //   anything else            -> NR
+        // (Filename is intentionally the sole source: per project decision.)
         function detectPbMode(name) {
             const base = (name || "").replace(/\\/g, "/")
                 .split("/").pop().toLowerCase();
@@ -3480,19 +3572,20 @@
             return false;
         }
 
+        // Decodes the buffer for the expected type. Globals are only
+        // committed after a fully successful decode, so a failure never
+        // leaves a mix of old data and new filename/mode (transactional).
         function decodeUeCapsBuffer(buffer, sourceName) {
             const type = detectPbMode(sourceName);
 
             if (type === "ap_plmn") {
                 try {
                     const apPlmnMessage = ApPlmn.decode(buffer);
-                    if (apPlmnMessage.ids &&
-                        apPlmnMessage.ids.length > 0) {
-                        currentMode = "ap_plmn";
-                        decodedData = ApPlmn.toObject(apPlmnMessage, { defaults: true });
-                        generateTable(decodedData);
-                        return true;
-                    }
+                    // Empty mappings are valid documents too.
+                    currentMode = "ap_plmn";
+                    decodedData = ApPlmn.toObject(apPlmnMessage, { defaults: true });
+                    generateTable(decodedData);
+                    return true;
                 } catch (error) {}
                 return showPbError(sourceName,
                     "could not be decoded as AP PLMN mapping binarypb.");
@@ -3501,16 +3594,15 @@
             if (type === "lte") {
                 try {
                     const lteMessage = UeCapsLte.decode(buffer);
-                    if (lteMessage.combos &&
-                        lteMessage.combos.length > 0) {
-                        currentMode = "lte";
-                        decodedData = UeCapsLte.toObject(lteMessage, {
-                            defaults: true,
-                            longs: String,
-                        });
-                        generateTable(decodedData);
-                        return true;
-                    }
+                    // proto2 required fields make decode() itself the
+                    // structural validation; an empty combos list is valid.
+                    currentMode = "lte";
+                    decodedData = UeCapsLte.toObject(lteMessage, {
+                        defaults: true,
+                        longs: String,
+                    });
+                    generateTable(decodedData);
+                    return true;
                 } catch (error) {}
                 return showPbError(sourceName, "could not be decoded as LTE binarypb.");
             }
@@ -3518,8 +3610,7 @@
             // NR
             try {
                 const nrMessage = UeCaps.decode(buffer);
-                if (nrMessage.ComboGroups &&
-                    nrMessage.ComboGroups.length > 0) {
+                if (nrMessage.ComboGroups) {
                     currentMode = "nr";
                     decodedData = UeCaps.toObject(nrMessage, { defaults: true });
                     processDecodedMessage(decodedData);
@@ -3532,12 +3623,14 @@
         }
 
         function loadPbBytes(bytes, pbName) {
+            // Transactional: only touch filename/state after decode succeeds.
+            if (!decodeUeCapsBuffer(bytes, pbName)) return false;
             originalFilename = pbName.endsWith(".binarypb")
                 ? pbName.slice(0, -9)
                 : pbName;
             document.getElementById("filenameInput").value =
                 originalFilename || "default_filename";
-            return decodeUeCapsBuffer(bytes, pbName);
+            return true;
         }
 
         let zipPickerFiles = []; // All binarypbs from the loaded zip
@@ -3635,16 +3728,25 @@
             }
         });
 
+        // Validate against the protobuf schema before encoding (proto2
+        // required fields are NOT checked by encode() itself). verify() runs
+        // on the message instance: protobufjs converts uint64 strings to
+        // Long during fromObject, so string masks verify correctly here.
+        function encodeChecked(type, object) {
+            const message = type.fromObject(object);
+            const error = type.verify(message);
+            if (error) throw new Error(error);
+            return type.encode(message).finish();
+        }
+
         function recompileProtobufBytes() {
             if (currentMode === "lte") {
-                return UeCapsLte.encode(UeCapsLte.fromObject(decodedData)).finish();
+                return encodeChecked(UeCapsLte, decodedData);
             }
             if (currentMode === "ap_plmn") {
-                return ApPlmn.encode(ApPlmn.fromObject(decodedData)).finish();
+                return encodeChecked(ApPlmn, decodedData);
             }
-            const message = UeCaps.fromObject(decodedData);
-            //console.log("Compiling this:", JSON.stringify(message, null, 2));
-            return UeCaps.encode(message).finish();
+            return encodeChecked(UeCaps, decodedData);
         }
 
         function recompileProtobuf() {
@@ -3665,9 +3767,10 @@
             // Set the flag to indicate that localStorage has been cleared
             clearSessionFlag = true;
 
-            // Clear localStorage and sessionStorage
-            localStorage.clear();
-            sessionStorage.clear();
+            // Only remove keys owned by this editor; other origin data stays.
+            ["protobufData", "pbMode", "fileName", "zipSession"].forEach((key) => {
+                localStorage.removeItem(key);
+            });
 
             // Reload the page
             location.reload();
@@ -3814,6 +3917,10 @@
         }
         
         async function createZipWithSubdirectories() {
+            // Note: export intentionally builds a FRESH Magisk scaffold
+            // (customize.sh / module.prop / update-binary) and preserves only
+            // the .binarypb files — original non-binarypb zip contents are not
+            // carried over. The new module.prop reflects the edited filename.
             let curr_time = getFormattedDate();
             // Create a new ZIP instance
             const zip = new JSZip();
