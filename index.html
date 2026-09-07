@@ -522,6 +522,11 @@
                 <input type="checkbox" id="autoGenUlca">
                 Allow ULCA (NR uplink carrier aggregation; ULMIMO combos never get ULCA)
             </label>
+            <label id="autoGenMaxCcLabel" style="display: none; margin-left: 12px;">
+                Max CC: <input type="number" id="autoGenMaxCc" value="6" min="1" max="32" style="width: 60px;">
+                <span title="Maximum total component carriers per combo. For NSA (ENDC), NR and LTE carriers both count."></span>
+                (NSA counts NR+LTE)
+            </label>
             <pre id="autoGenOutput" spellcheck="false" style="white-space: pre-wrap; max-height: 30vh; overflow: auto;"></pre>
             <button class="modalbtn" onclick="closeAutoGenModal()">Close</button>
             <button class="modalbtn" onclick="runAutoGenerate()">Generate</button>
@@ -1684,6 +1689,8 @@
         function openAutoGenModal() {
             document.getElementById("autoGenUlcaLabel").style.display =
                 currentMode === "nr" ? "inline-block" : "none";
+            document.getElementById("autoGenMaxCcLabel").style.display =
+                currentMode === "nr" ? "inline-block" : "none";
             if (autoGenRows.length === 0) {
                 autoGenRows.push(defaultAutoGenRow());
             }
@@ -1893,6 +1900,7 @@
             const existing = collectExistingAutoGenKeys();
             const seen = new Set();
             const newCombos = [];
+            const skippedList = [];
             let skipped = 0;
 
             for (const variantSet of candidates) {
@@ -1921,6 +1929,7 @@
                     const key = autogenKey(combo);
                     if (existing.has(key) || seen.has(key)) {
                         skipped++;
+                        if (skippedList.length < 40) skippedList.push(lteComboSummary(combo));
                         continue;
                     }
                     seen.add(key);
@@ -1933,7 +1942,8 @@
 
             newCombos.slice().reverse().forEach((combo) => decodedData.combos.unshift(combo));
             generateTable(decodedData);
-            return `Generated ${newCombos.length} combos (${skipped} skipped as duplicates).`;
+            return `Generated ${newCombos.length} combos (${skipped} skipped as duplicates)` +
+                (skippedList.length ? ", already in the file:\n" + skippedList.join("\n") : ".");
         }
 
         function autoGenerateNr() {
@@ -2012,9 +2022,44 @@
             const existing = collectExistingAutoGenKeys();
             const seen = new Set();
             const newGroups = [];
+            const skippedList = [];
             let skipped = 0;
+            let skippedLimits = 0;
+
+            const maxCc = parseInt(document.getElementById("autoGenMaxCc").value, 10) || 6;
+            const maxBw = 340; // Absolute DL bandwidth cap (MHz), SA and NSA alike
 
             for (const candidate of candidates) {
+                // Hard limits: ENDC carries at most 3 NR carriers, the total
+                // carrier count is capped (NSA counts NR + LTE), and the total
+                // DL bandwidth must not exceed 340 MHz.
+                const nrCarriers = candidate.variantSet.reduce((sum, ids) => sum + ids.length, 0);
+                const totalCc = nrCarriers + candidate.lteSubset.length;
+                if (candidate.lteSubset.length > 0 && nrCarriers > 3) {
+                    skippedLimits++;
+                    continue;
+                }
+                if (totalCc > maxCc) {
+                    skippedLimits++;
+                    continue;
+                }
+
+                // Each NR feature set id is one carrier; an LTE anchor is
+                // assumed to be 20 MHz.
+                let totalBw = 0;
+                candidate.nrSubset.forEach((row, index) => {
+                    candidate.variantSet[index].forEach((id) => {
+                        const featureSet = decodedData.dlFeaturePerCCList &&
+                            decodedData.dlFeaturePerCCList[id - 1];
+                        totalBw += Number(featureSet && featureSet.maxBw) || 0;
+                    });
+                });
+                totalBw += candidate.lteSubset.length * 20;
+                if (totalBw > maxBw) {
+                    skippedLimits++;
+                    continue;
+                }
+
                 // Each entry knows its superset row and DL feature set variant.
                 const entries = candidate.lteSubset.map((row) => ({
                     row, isLte: true, dlIds: [], cc: buildLteAnchorCc(row),
@@ -2099,6 +2144,7 @@
                     const key = autogenKey(combo);
                     if (existing.has(key) || seen.has(key)) {
                         skipped++;
+                        if (skippedList.length < 40) skippedList.push(nrComboSummary(combo));
                         continue;
                     }
                     seen.add(key);
@@ -2120,7 +2166,11 @@
 
             newGroups.slice().reverse().forEach((group) => decodedData.ComboGroups.unshift(group));
             generateTable(decodedData);
-            return `Generated ${newGroups.length} combos (${skipped} skipped as duplicates).`;
+            let summary = `Generated ${newGroups.length} combos (${skipped} skipped as duplicates`;
+            if (skippedLimits > 0) summary += `, ${skippedLimits} skipped over CC/bandwidth limits`;
+            summary += ")";
+            if (skippedList.length) summary += ", already in the file:\n" + skippedList.join("\n");
+            return summary;
         }
 
         // ULCA band pair rules (ported from the Shannon LTE editor); a single
@@ -3533,6 +3583,7 @@
                 clearSessionFlag = false; // Reset the flag after saving
                 return;
             }
+            if (!decodedData) return;
 
             // Zip session: persist every zip file (with stashed edits)
             // plus which one is active, so a reload restores everything.
@@ -3560,17 +3611,16 @@
             }
             localStorage.removeItem('zipSession');
 
-            const compressedBlob = recompileProtobuf(); // Get the binary protobuf data (Blob)
-
-            // Convert the Blob to a Base64 string (as localStorage can only store strings)
-            const reader = new FileReader();
-            reader.onloadend = function() {
-                const base64String = reader.result.split(',')[1]; // Strip out the "data:" prefix
-                localStorage.setItem('protobufData', base64String); // Store the Base64 string in localStorage
+            // Synchronous base64: an async FileReader can lose the race
+            // against page unload.
+            try {
+                localStorage.setItem('protobufData',
+                    bytesToBase64(recompileProtobufBytes()));
                 localStorage.setItem('pbMode', currentMode);
                 console.log("Data saved to localStorage.");
-            };
-            reader.readAsDataURL(compressedBlob); // Convert the Blob to a Base64 string
+            } catch (error) {
+                console.error("Could not save session:", error);
+            }
             localStorage.setItem('fileName', originalFilename);
         }
 
