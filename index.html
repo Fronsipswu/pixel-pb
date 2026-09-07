@@ -405,7 +405,7 @@
                     <option value="100">100</option>
                     <option value="200">200</option>
                     <option value="500">500</option>
-                    <option value="all">All</option>
+                    <option value="1000">1000</option>
                 </select>
             </div>
             <div id="recompileBtn" style="display: none;">
@@ -796,9 +796,7 @@
         let globalIndexMap = []; // Stores correct indices after filtering & pagination
 
         function changePageSize(newSize) {
-            rowsPerPage = newSize === "all"
-                ? Infinity
-                : parseInt(newSize, 10);
+            rowsPerPage = parseInt(newSize, 10) || 20;
             currentPage = 1; // Reset to first page when changing page size
             generateTable(decodedData);
         }
@@ -1203,7 +1201,7 @@
             document.getElementById("recompileBtn").style.display = "block";
             document.getElementById("fixPlmnBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
-            document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1A+3C+8A";
+            document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3C+8A";
             document.getElementById("pageSizeSelector").style.display = "block";
         }
 
@@ -1212,13 +1210,13 @@
 
             bandFilter = bandFilter.replace(/\s+/g, "").replace(/\+$/, "");
 
-            // Parse filter parts like "1A", "3C", "8a" (band + DL class letter)
+            // Parse filter parts like "1A", "3C", "8a" or plain "1" (any class)
             const filterParts = bandFilter.split("+").map(part => {
-                const match = part.match(/^(\d+)([a-fA-F])$/);
+                const match = part.match(/^(\d+)([a-fA-F])?$/);
                 if (!match) return null;
                 return {
                     band: Number(match[1]),
-                    letter: match[2].toUpperCase(),
+                    letter: match[2] ? match[2].toUpperCase() : null,
                 };
             }).filter(Boolean);
 
@@ -1236,6 +1234,21 @@
                 });
 
                 return filterParts.every(part => {
+                    if (part.letter === null) {
+                        // No class given: match the band with any class.
+                        const bandTotal = [...available.entries()]
+                            .filter(([key]) => key.startsWith(part.band + "|"))
+                            .reduce((sum, [, count]) => sum + count, 0);
+                        if (bandTotal === 0) return false;
+                        // Consume one arbitrary class instance for this band.
+                        for (const [key, count] of available.entries()) {
+                            if (key.startsWith(part.band + "|") && count > 0) {
+                                available.set(key, count - 1);
+                                break;
+                            }
+                        }
+                        return true;
+                    }
                     const key = part.band + "|" + part.letter;
                     const count = available.get(key) || 0;
                     if (count === 0) return false;
