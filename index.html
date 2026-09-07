@@ -218,6 +218,9 @@
         .combodirind {
             display: none !important;
         }
+        .field-label {
+            display: none;
+        }
         @media (max-width: 768px) {
 
             .main-table {
@@ -279,45 +282,74 @@
              .main-table th:first-child { /* "Filtered Combos" header */
                 text-align: left;
             }
-            .main-table th:nth-child(2) { /* "Actions" header */
-                display: none; /* Hide actions header, buttons will be clear */
+            .main-table th:not(:first-child) { /* Hide all extra desktop headers on mobile */
+                display: none;
             }
 
             .main-table .combo-row {
                 display: flex;
-                flex-direction: column; /* Stack combo details and action buttons */
-                border-bottom: 1px solid var(--grey);
-                margin-bottom: 15px;
-                padding-bottom: 10px;
+                flex-wrap: wrap; /* Allow confmask metadata to wrap cleanly */
+                border-bottom: 2px solid light-dark(#ccc, var(--grey));
+                margin-bottom: 12px;
+                padding: 6px 4px 8px 4px;
+                box-sizing: border-box;
             }
             .main-table .combo-row > td { /* Target direct children td of .combo-row */
-                width: 100% !important; 
                 box-sizing: border-box;
-                padding: 5px 0;
+                padding: 2px 0;
+                border: none;
             }
-            .main-table .buttons { /* Container for JSON, Copy, Remove buttons */
+            .main-table .combo-row > td:first-child {
+                flex: 1 1 100%;
+                width: 100% !important;
+            }
+            .main-table .combo-row > td.confmask {
+                flex: 0 1 auto;
+                display: inline-flex !important;
+                align-items: center;
+                font-size: 11px;
+                font-family: monospace;
+                padding: 2px 6px;
+                margin: 4px 6px 2px 0;
+                background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
+                border-radius: 3px;
+                border: none;
+            }
+            .main-table .combo-row > td.confmask:nth-of-type(2)::before {
+                content: "Conf 0-63: ";
+                font-family: Arial, sans-serif;
+                font-weight: 600;
+                margin-right: 4px;
+                opacity: 0.7;
+            }
+            .main-table .combo-row > td.confmask:nth-of-type(3)::before {
+                content: "Conf 64-95: ";
+                font-family: Arial, sans-serif;
+                font-weight: 600;
+                margin-right: 4px;
+                opacity: 0.7;
+            }
+            .main-table .combo-row > td.buttons { /* Container for JSON, Copy, Remove buttons */
+                flex: 1 1 100%;
+                width: 100% !important;
                 display: flex;
                 flex-direction: row; 
                 justify-content: space-between; 
-                margin-top: 10px;
+                margin-top: 6px;
+                gap: 6px;
             }
             .main-table .buttons button {
                 flex-grow: 1; 
-                margin: 0 3px; 
-                padding: 10px 5px;
-                font-size: 13px;
+                margin: 0; 
+                padding: 6px 4px;
+                font-size: 12px;
+                height: 30px;
             }
 
             .combo-table td {
-                width: 100% !important; 
-                padding: 8px 0; 
-                border: none; 
-                display: flex; 
-                flex-wrap: wrap; 
-                align-items: center; 
-            }
-            .combodirind {
-            display: flex !important;
+                padding: 2px 0;
+                border: none;
+                box-sizing: border-box;
             }
             .bandextraind {
                 display: none !important;
@@ -403,43 +435,196 @@
                 margin-bottom: 0;
             }
 
-            /* General Touch-ups for buttons and inputs */
+            /* General Touch-ups for mobile inputs & action controls */
             button, select, input[type='text'], input[type='number'], input[type='file']::file-selector-button {
-                padding: 10px;
-                font-size: 14px;
+                padding: 8px 10px;
+                font-size: 13px;
+                box-sizing: border-box;
             }
 
-            /* --- LTE layout --- */
-            /* Band row full width, then the DL class / DL MIMO / UL class
-               dropdowns two-per-line instead of stacked full width. */
-            .combo-table tr.lte-comp-row {
-                display: flex;
-                flex-wrap: wrap;
-                border: none;
-            }
-            .combo-table tr.lte-comp-row > td {
-                width: auto !important;
-                flex: 1 1 46%;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                padding: 6px 0;
-                border: none;
-            }
-            .combo-table tr.lte-comp-row > td:first-child {
-                flex-basis: 100%;
-            }
-            .combo-table tr.lte-comp-row > td select {
-                flex: 1;
-                min-width: 0;
-            }
-
-            /* --- AP PLMN layout --- */
+            /* --- Header & BCS controls --- */
             .groupheader {
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
-                gap: 4px 8px;
+                gap: 4px 6px;
+                font-size: 11px;
+                padding: 4px 2px 6px 2px;
+                margin-bottom: 6px;
+                border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+            }
+            .groupheader span {
+                white-space: nowrap;
+                opacity: 0.85;
+            }
+            .groupheader input,
+            .groupheader select {
+                padding: 2px 5px !important;
+                font-size: 11px !important;
+                height: 24px !important;
+                width: auto !important;
+                min-width: 36px;
+                max-width: 75px;
+                box-sizing: border-box;
+            }
+
+            /* --- Compact carrier controls --- */
+            .combo-table button {
+                padding: 2px 7px;
+                font-size: 13px;
+                min-width: 28px;
+                height: 30px;
+                box-sizing: border-box;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .combo-table input.band-input,
+            .combo-table input.plmn-input {
+                padding: 3px 6px;
+                font-size: 13px;
+                height: 30px;
+                width: 55px;
+                box-sizing: border-box;
+            }
+            .combo-table select {
+                padding: 3px 6px;
+                font-size: 12px;
+                height: 30px;
+                box-sizing: border-box;
+            }
+            .combo-table button.bwInd {
+                min-width: 24px;
+                padding: 2px 4px;
+                font-weight: bold;
+            }
+
+            /* --- NR / ENDC layout --- */
+            .combo-table tr.nr-comp-row {
+                display: grid;
+                grid-template-columns: auto 1fr;
+                align-items: center;
+                gap: 4px 6px;
+                padding: 5px 0;
+                border-bottom: 1px dashed light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
+            }
+            .combo-table tr.nr-comp-row:last-child {
+                border-bottom: none;
+            }
+            .combo-table tr.nr-comp-row > td.band-cell {
+                grid-column: 1 / -1;
+                width: auto !important;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 2px 0;
+                border: none;
+            }
+            .combo-table tr.nr-comp-row > td.combodirind {
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                width: auto !important;
+                padding: 0;
+                border: none;
+            }
+            .combo-table tr.nr-comp-row > td.combodirind .groupheader {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0;
+                padding: 2px 5px;
+                font-size: 10px;
+                font-weight: bold;
+                color: light-dark(#444, #ddd);
+                background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.12));
+                border-radius: 4px;
+                border-bottom: none;
+                min-width: 22px;
+                text-align: center;
+            }
+            .combo-table tr.nr-comp-row > td.nr-feature-cell {
+                width: auto !important;
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 4px;
+                padding: 2px 0;
+                border: none;
+                min-width: 0;
+            }
+            .combo-table tr.nr-comp-row > td.nr-feature-cell select {
+                flex: 1 1 140px;
+                min-width: 0;
+                max-width: 100%;
+            }
+            .combo-table tr.nr-comp-row > td.nr-feature-cell br {
+                flex-basis: 100%;
+                height: 0;
+                margin: 0;
+            }
+
+            /* --- LTE layout --- */
+            .combo-table tr.lte-comp-row {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 4px;
+                padding: 5px 0;
+                border-bottom: 1px dashed light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
+            }
+            .combo-table tr.lte-comp-row:last-child {
+                border-bottom: none;
+            }
+            .combo-table tr.lte-comp-row > td.band-cell {
+                flex: 1 1 100%;
+                width: auto !important;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 2px 0;
+                border: none;
+            }
+            .combo-table tr.lte-comp-row > td.lte-field {
+                flex: 1 1 0;
+                min-width: 0;
+                width: auto !important;
+                display: flex;
+                align-items: center;
+                gap: 3px;
+                padding: 2px 0;
+                border: none;
+            }
+            .combo-table tr.lte-comp-row > td.lte-field select {
+                flex: 1 1 auto;
+                min-width: 0;
+                width: 100%;
+            }
+            .field-label {
+                display: inline-block;
+                font-size: 10px;
+                font-weight: bold;
+                color: light-dark(#666, #aaa);
+                text-transform: uppercase;
+                margin-right: 2px;
+                flex-shrink: 0;
+            }
+
+            /* --- AP PLMN layout --- */
+            .combo-table tr.plmn-comp-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 0;
+                border: none;
+            }
+            .combo-table tr.plmn-comp-row > td {
+                width: auto !important;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 2px 0;
+                border: none;
             }
 
         }
@@ -1011,7 +1196,7 @@
 
                         // 0 is NR, 1 is LTE (Later on LTE DL = 1, LTE UL = 2)
                         let ran = (ccItem.band > 10000) ? 0 : 1;
-                        let rowClass = hasUlFeature ? "color-row" : ""; // Apply class if ulFeaturePerCCIds exists
+                        let rowClass = "nr-comp-row" + (hasUlFeature ? " color-row" : ""); // Apply class if ulFeaturePerCCIds exists
 
                         let bandInput = `<input name="band-input" type="text" class="band-input" value="${bandParseInt(ccItem.bwClassDL,ccItem.band)}"
                             onchange="updateBand(${realGroupIndex}, ${localComboIndex}, ${ccIndex}, this.value)" />`;
@@ -1102,13 +1287,13 @@
                         }
 
                         innerTableHTML += `<tr class="${rowClass}">
-                            <td width="135">${bandInput} ${moveBandUpBtn} ${moveBandDownBtn} ${removeBandBtn} ${addBandBtn}</td>
+                            <td class="band-cell" width="135">${bandInput} ${moveBandUpBtn} ${moveBandDownBtn} ${removeBandBtn} ${addBandBtn}</td>
                             <td class="bandextraind" width="40">${ccItem.bwClassDL}/${ccItem.bwClassUL}</td>
                             <td class="bandextraind" width="30">${ccItem.dlFeatureIndex}/${ccItem.ulFeatureIndex}</td>
                             <td class="combodirind"><span class="groupheader">DL</span></td>
-                            <td width="500" >${dlFeaturePerCCIdsHTML}</td>
+                            <td class="nr-feature-cell dl-feature-cell" width="500">${dlFeaturePerCCIdsHTML}</td>
                             <td class="combodirind"><span class="groupheader">UL</span></td>
-                            <td>${ulFeaturePerCCIdsHTML}</td>
+                            <td class="nr-feature-cell ul-feature-cell">${ulFeaturePerCCIdsHTML}</td>
                         </tr>`;
                     });
 
@@ -1353,14 +1538,14 @@
                     ).join("");
 
                     innerTableHTML += `<tr class="lte-comp-row">
-                        <td width="135">
+                        <td class="band-cell" width="135">
                             <input name="band-input" type="text" class="band-input" value="${component.band}"
                                 onchange="updateLteBand(${comboIndex}, ${componentIndex}, this.value)" />
                             ${moveBandUpBtn} ${moveBandDownBtn} ${removeBandBtn} ${addBandBtn}
                         </td>
-                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlClass', this.value)">${dlClassOptions}</select></td>
-                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlMimo', this.value)">${dlMimoOptions}</select></td>
-                        <td><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'ulClass', this.value)">${ulClassOptions}</select></td>
+                        <td class="lte-field lte-dl-class"><span class="field-label">DL</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlClass', this.value)">${dlClassOptions}</select></td>
+                        <td class="lte-field lte-dl-mimo"><span class="field-label">MIMO</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlMimo', this.value)">${dlMimoOptions}</select></td>
+                        <td class="lte-field lte-ul-class"><span class="field-label">UL</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'ulClass', this.value)">${ulClassOptions}</select></td>
                     </tr>`;
                 });
 
@@ -2693,7 +2878,7 @@
                         ? `<button title="Add PLMN" onclick="addApPlmnPlmn(${entryIndex})">+</button>`
                         : "";
 
-                    innerTableHTML += `<tr>
+                    innerTableHTML += `<tr class="plmn-comp-row">
                         <td width="135">
                             <input name="plmn-input" type="text" class="plmn-input" value="${decodePlmn(rawPlmn)}"
                                 onchange="updateApPlmnPlmn(${entryIndex}, ${plmnIndex}, this.value)" />
