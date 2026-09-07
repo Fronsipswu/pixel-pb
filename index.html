@@ -110,6 +110,13 @@
         .plmn-input {
             width: 50px;
         }
+        .autogen-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
 
         .header {
             display: flex;
@@ -505,6 +512,18 @@
         </div>
     </div>
 
+    <!-- Auto generate modal -->
+    <div id="autoGenModal" class="modal">
+        <div class="modal-content" style="width: 60%;">
+            <h3>Auto generate combos</h3>
+            <div id="autoGenRows"></div>
+            <button title="Add another band to the superset" onclick="addAutoGenRow()">+ Add band</button>
+            <pre id="autoGenOutput" spellcheck="false" style="white-space: pre-wrap; max-height: 30vh; overflow: auto;"></pre>
+            <button class="modalbtn" onclick="closeAutoGenModal()">Close</button>
+            <button class="modalbtn" onclick="runAutoGenerate()">Generate</button>
+        </div>
+    </div>
+
     <!-- Modal for adding custom feature sets -->
     <div id="customFeatureModal" class="modal">
        <div class="modal-content">
@@ -892,6 +911,7 @@
                 ${integrityCookieStoreButtons()}
                 </span>
                 <div>
+                <span id="infoAutoGen"><button title="Auto generate SA/NSA combos from a superset" onclick="openAutoGenModal()">Auto generate</button></span>
                 <span id="infoFeatureSets">FeatureSets:
                     <button title="Add custom DL/UL feature sets" onclick="showCustomFeatureModal()">Add</button>
                     <button title="Edit available FeatureSets" id="editFeatureSetsBtn" onclick="editFeatureSets(1)">JSON</button>
@@ -1199,6 +1219,7 @@
 
             let tableHTML = `<div class="binarypbInfo"><span>LTE binarypb | Version: ${data.version} | Bitmask:
                 <input type="text" value="${data.bitmask}" onchange="updateLteBitmask(this.value)">
+                <button title="Auto generate combos from a superset" onclick="openAutoGenModal()">Auto generate</button>
                 </span></div>
             <table class="main-table" style="border-collapse: collapse;">
                 <tr>
@@ -1615,6 +1636,379 @@
             });
 
             return issues;
+        }
+
+        // ------------------------------------------------------------------
+        // Auto generate combos (superset -> SA/NSA variants)
+        // ------------------------------------------------------------------
+
+        let autoGenRows = [];
+
+        function openAutoGenModal() {
+            if (autoGenRows.length === 0) {
+                autoGenRows.push(currentMode === "lte"
+                    ? { band: "1A", mimo: 1 }
+                    : { band: "n78", dlIds: [1], ulId: 0 });
+            }
+            renderAutoGenRows();
+            document.getElementById("autoGenOutput").textContent = "";
+            document.getElementById("autoGenModal").style.display = "block";
+        }
+
+        function closeAutoGenModal() {
+            document.getElementById("autoGenModal").style.display = "none";
+        }
+
+        function addAutoGenRow() {
+            autoGenRows.push(currentMode === "lte"
+                ? { band: "1A", mimo: 1 }
+                : { band: "n78", dlIds: [1], ulId: 0 });
+            renderAutoGenRows();
+        }
+
+        function removeAutoGenRow(index) {
+            autoGenRows.splice(index, 1);
+            renderAutoGenRows();
+        }
+
+        function updateAutoGenRow(index, field, value) {
+            const row = autoGenRows[index];
+            if (!row) return;
+            row[field] = (field === "mimo" || field === "ulId")
+                ? (parseInt(value, 10) || 0)
+                : value;
+        }
+
+        function addAutoGenDlId(index) {
+            autoGenRows[index].dlIds.push(1);
+            renderAutoGenRows();
+        }
+
+        function removeAutoGenDlId(index) {
+            if (autoGenRows[index].dlIds.length > 1) {
+                autoGenRows[index].dlIds.pop();
+                renderAutoGenRows();
+            }
+        }
+
+        function updateAutoGenDlId(index, idIndex, value) {
+            autoGenRows[index].dlIds[idIndex] = parseInt(value, 10) || 0;
+        }
+
+        function renderAutoGenRows() {
+            const container = document.getElementById("autoGenRows");
+            if (currentMode === "lte") {
+                container.innerHTML = autoGenRows.map((row, index) => `
+                    <div class="autogen-row">
+                        <input type="text" class="band-input" value="${escapeHtml(row.band)}"
+                            onchange="updateAutoGenRow(${index}, 'band', this.value)">
+                        <select onchange="updateAutoGenRow(${index}, 'mimo', this.value)">
+                            ${["None", "4x4", "2x2", "4+2", "2+2"].map((label, mimo) =>
+                                `<option value="${mimo}" ${row.mimo === mimo ? "selected" : ""}>DL MIMO: ${label}</option>`
+                            ).join("")}
+                        </select>
+                        <button title="Remove band" onclick="removeAutoGenRow(${index})">-</button>
+                    </div>`).join("");
+            } else {
+                container.innerHTML = autoGenRows.map((row, index) => `
+                    <div class="autogen-row">
+                        <input type="text" class="band-input" value="${escapeHtml(row.band)}"
+                            onchange="updateAutoGenRow(${index}, 'band', this.value)">
+                        <span>DL:</span>
+                        ${row.dlIds.map((id, idIndex) => `
+                            <select onchange="updateAutoGenDlId(${index}, ${idIndex}, this.value)">
+                                <option value="0" ${id === 0 ? "selected" : ""}>Feature set</option>
+                                ${createDropdownOptions(decodedData.dlFeaturePerCCList, id, 0)}
+                            </select>`).join("")}
+                        <button title="Add another DL feature set (higher bandwidth class)" onclick="addAutoGenDlId(${index})">+</button>
+                        ${row.dlIds.length > 1 ? `<button title="Remove last DL feature set" onclick="removeAutoGenDlId(${index})">-</button>` : ""}
+                        <select title="UL feature set (defaults to the DL feature set)" onchange="updateAutoGenRow(${index}, 'ulId', this.value)">
+                            <option value="0" ${!row.ulId ? "selected" : ""}>UL: same as DL</option>
+                            ${createDropdownOptions(decodedData.ulFeaturePerCCList, row.ulId || 0, 0)}
+                        </select>
+                        <button title="Remove band" onclick="removeAutoGenRow(${index})">-</button>
+                    </div>`).join("");
+            }
+        }
+
+        function runAutoGenerate() {
+            const output = document.getElementById("autoGenOutput");
+            try {
+                output.textContent = currentMode === "lte"
+                    ? autoGenerateLte()
+                    : autoGenerateNr();
+            } catch (error) {
+                output.textContent = "Error: " + error.message;
+            }
+        }
+
+        // Uplink is illegal on SDL bands, and on bands 7/38 when both coexist.
+        function autogenBlockedBands(bands) {
+            const blocked = new Set([29, 32, 75]);
+            if (bands.has(7) && bands.has(38)) {
+                blocked.add(7);
+                blocked.add(38);
+            }
+            return blocked;
+        }
+
+        // Broad duplicate match: band + DL bandwidth class pairs (and UL),
+        // ignoring feature sets, MIMO and masks.
+        function autogenKey(candidate) {
+            let dl;
+            let ul;
+            if (currentMode === "lte") {
+                dl = (candidate.components || [])
+                    .filter((c) => (Number(c.bwClassMimoDl) || 0) > 0)
+                    .map((c) => `${Number(c.band)}:${(Number(c.bwClassMimoDl) || 0) & ~1}`).sort();
+                ul = (candidate.components || [])
+                    .filter((c) => (Number(c.bwClassMimoUl) || 0) > 0)
+                    .map((c) => `${Number(c.band)}:${(Number(c.bwClassMimoUl) || 0) & ~1}`).sort();
+            } else {
+                dl = (candidate.cc || [])
+                    .filter((cc) => (Number(cc.bwClassDL) || 0) > 0)
+                    .map((cc) => `${Number(cc.band)}:${Number(cc.bwClassDL) || 0}`).sort();
+                ul = (candidate.cc || [])
+                    .filter((cc) => (Number(cc.bwClassUL) || 0) > 0)
+                    .map((cc) => `${Number(cc.band)}:${Number(cc.bwClassUL) || 0}`).sort();
+            }
+            return dl.join("|") + "#UL:" + ul.join("|");
+        }
+
+        function collectExistingAutoGenKeys() {
+            const keys = new Set();
+            if (currentMode === "lte") {
+                decodedData.combos.forEach((combo) => keys.add(autogenKey(combo)));
+            } else {
+                decodedData.ComboGroups.forEach((group) =>
+                    group.combo.forEach((combo) => keys.add(autogenKey(combo)))
+                );
+            }
+            return keys;
+        }
+
+        function allSubsets(list) {
+            const result = [];
+            const total = 1 << list.length;
+            for (let mask = 1; mask < total; mask++) {
+                result.push(list.filter((_, index) => mask & (1 << index)));
+            }
+            return result;
+        }
+
+        function cartesian(listOfVariantArrays) {
+            return listOfVariantArrays.reduce(
+                (acc, variants) => acc.flatMap((prefix) => variants.map((v) => [...prefix, v])),
+                [[]]
+            );
+        }
+
+        function autoGenerateLte() {
+            const rows = autoGenRows.map((row) => {
+                const parsed = bandParseStr(row.band);
+                if (typeof parsed !== "object" || !parsed.band) {
+                    throw new Error(`Invalid LTE band "${row.band}" (use e.g. 1A, 3C).`);
+                }
+                if (Number(parsed.band) > 10000) {
+                    throw new Error(`Band "${row.band}" is an NR band; LTE auto generate only accepts LTE bands.`);
+                }
+                if (!parsed.bwClassDL) {
+                    throw new Error(`Band ${parsed.band} needs a class letter (e.g. 1A).`);
+                }
+                return { band: parsed.band, letter: parsed.bwClassDL, mimo: row.mimo || 0 };
+            });
+            if (rows.length === 0) throw new Error("Add at least one band.");
+
+            // Per component: the typed class, plus a class A downgrade.
+            const candidates = [];
+            for (const subset of allSubsets(rows)) {
+                for (const variantSet of cartesian(subset.map((row) => {
+                    const variants = [{ band: row.band, letter: row.letter, mimo: row.mimo }];
+                    if (row.letter !== 1) variants.push({ band: row.band, letter: 1, mimo: row.mimo });
+                    return variants;
+                }))) {
+                    candidates.push(variantSet);
+                }
+            }
+
+            const existing = collectExistingAutoGenKeys();
+            const seen = new Set();
+            const newCombos = [];
+            let skipped = 0;
+
+            for (const variantSet of candidates) {
+                const components = variantSet.map((v) => ({
+                    band: v.band,
+                    bwClassMimoDl: (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1) > 0
+                        ? (v.letter === 1 ? 32768 : v.letter === 2 ? 16384 : v.letter === 3 ? 8192 :
+                           v.letter === 4 ? 4096 : v.letter === 5 ? 2048 : 1024) |
+                          (v.mimo === 1 ? 1 : 0)
+                        : 32768,
+                    bwClassMimoUl: 0,
+                }));
+
+                const bands = new Set(components.map((c) => c.band));
+                const blocked = autogenBlockedBands(bands);
+                const ulOptions = components.filter((c) => !blocked.has(c.band));
+                if (ulOptions.length === 0) continue; // No legal uplink
+
+                for (const ulBand of ulOptions.map((c) => c.band)) {
+                    const combo = {
+                        components: components.map((c) => ({
+                            ...c,
+                            bwClassMimoUl: c.band === ulBand ? 32768 : 0,
+                        })),
+                    };
+                    const key = autogenKey(combo);
+                    if (existing.has(key) || seen.has(key)) {
+                        skipped++;
+                        continue;
+                    }
+                    seen.add(key);
+                    newCombos.push(combo);
+                    if (newCombos.length > 2000) {
+                        throw new Error("Too many combinations; use fewer bands or classes.");
+                    }
+                }
+            }
+
+            newCombos.slice().reverse().forEach((combo) => decodedData.combos.unshift(combo));
+            generateTable(decodedData);
+            return `Generated ${newCombos.length} combos (${skipped} skipped as duplicates).`;
+        }
+
+        function autoGenerateNr() {
+            const rows = autoGenRows.map((row) => {
+                const parsed = bandParseStr(row.band);
+                if (typeof parsed !== "object" || !parsed.band) {
+                    throw new Error(`Invalid band "${row.band}" (use e.g. 1, 3C, n78).`);
+                }
+                return {
+                    band: Number(parsed.band),
+                    letter: parsed.bwClassDL || 1, // Only used for LTE (ENDC) bands
+                    mimo: row.mimo || 0,
+                    dlIds: (row.dlIds || []).filter((id) => id > 0),
+                    ulIds: row.ulId > 0 ? [row.ulId] : null,
+                };
+            });
+            if (rows.length === 0) throw new Error("Add at least one band.");
+
+            const lteRows = rows.filter((row) => row.band <= 10000);
+            const nrRows = rows.filter((row) => row.band > 10000);
+            if (nrRows.length === 0) {
+                throw new Error("Add at least one NR band (e.g. n78).");
+            }
+            nrRows.forEach((row) => {
+                if (row.dlIds.length === 0) {
+                    throw new Error(`NR band n${row.band - 10000} needs at least one DL feature set.`);
+                }
+            });
+
+            // NR component variants: full DL feature set list, plus a
+            // single-feature-set (class A) downgrade.
+            function buildNrCc(band, dlIds, ulIds) {
+                const cc = {
+                    band,
+                    bwClassDL: 0,
+                    bwClassUL: 0,
+                    dlFeaturePerCCIds: Uint8Array.from(dlIds),
+                    ulFeaturePerCCIds: Uint8Array.from(ulIds || []),
+                    dlFeatureIndex: 0,
+                    ulFeatureIndex: 0,
+                };
+                updateDependentValues(cc, 0);
+                return cc;
+            }
+
+            function buildLteAnchorCc(row) {
+                const count = LTE_CLASS_CC_COUNT[String.fromCharCode(64 + row.letter)] || 1;
+                return {
+                    band: row.band,
+                    bwClassDL: row.letter,
+                    bwClassUL: 1, // Class A
+                    dlFeatureIndex: parseLteFeatureIndex({ mimo: row.mimo, count, ran: 1 }).FeatureIndex,
+                    ulFeatureIndex: 1, // 2x2
+                };
+            }
+
+            const candidates = [];
+            for (const nrSubset of allSubsets(nrRows)) {
+                for (const variantSet of cartesian(nrSubset.map((row) => {
+                    const variants = [row.dlIds];
+                    if (row.dlIds.length > 1) variants.push([row.dlIds[0]]);
+                    return variants;
+                }))) {
+                    // SA (no LTE anchor) and ENDC (each LTE subset) variants.
+                    const lteSubsets = lteRows.length > 0 ? [[], ...allSubsets(lteRows)] : [[]];
+                    for (const lteSubset of lteSubsets) {
+                        candidates.push({ nrSubset, variantSet, lteSubset });
+                    }
+                }
+            }
+
+            const existing = collectExistingAutoGenKeys();
+            const seen = new Set();
+            const newGroups = [];
+            let skipped = 0;
+
+            for (const candidate of candidates) {
+                const ccList = candidate.lteSubset.map((row) => buildLteAnchorCc(row));
+                candidate.nrSubset.forEach((row, index) => {
+                    const dlIds = candidate.variantSet[index];
+                    ccList.push(buildNrCc(row.band, dlIds, row.ulIds || dlIds));
+                });
+
+                const bands = new Set(ccList.map((cc) => Number(cc.band)));
+                const blocked = autogenBlockedBands(bands);
+                const ulOptions = ccList.filter((cc) => !blocked.has(Number(cc.band)));
+                if (ulOptions.length === 0) continue;
+
+                for (const ulCc of ulOptions) {
+                    const combo = {
+                        cc: ccList.map((cc) => {
+                            const isUl = cc === ulCc;
+                            const copy = {
+                                band: cc.band,
+                                bwClassDL: cc.bwClassDL,
+                                bwClassUL: isUl ? cc.bwClassUL : 0,
+                                dlFeatureIndex: cc.dlFeatureIndex,
+                                ulFeatureIndex: isUl ? cc.ulFeatureIndex : 0,
+                            };
+                            if (cc.dlFeaturePerCCIds) {
+                                copy.dlFeaturePerCCIds = cc.dlFeaturePerCCIds;
+                                copy.ulFeaturePerCCIds = isUl
+                                    ? cc.ulFeaturePerCCIds
+                                    : new Uint8Array(0);
+                            }
+                            return copy;
+                        }),
+                        bitMask: 0,
+                    };
+                    const key = autogenKey(combo);
+                    if (existing.has(key) || seen.has(key)) {
+                        skipped++;
+                        continue;
+                    }
+                    seen.add(key);
+                    newGroups.push({
+                        comboHeader: {
+                            bcsNr: 0,
+                            bcsIntraEndc: 0,
+                            bcsEutra: 0,
+                            powerClass: 0,
+                            intraBandEnDcSupport: 0,
+                        },
+                        combo: [combo],
+                    });
+                    if (newGroups.length > 2000) {
+                        throw new Error("Too many combinations; use fewer bands or feature sets.");
+                    }
+                }
+            }
+
+            newGroups.slice().reverse().forEach((group) => decodedData.ComboGroups.unshift(group));
+            generateTable(decodedData);
+            return `Generated ${newGroups.length} combos (${skipped} skipped as duplicates).`;
         }
 
         function copyLteCombo(comboIndex) {
