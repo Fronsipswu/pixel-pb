@@ -1075,6 +1075,12 @@
             generateTable(decodedData);
         }
 
+        // LTE band definitions (shared across LTE validator, auto-generator, and UI)
+        const LTE_SDL_BANDS = new Set([29, 32, 75]);
+        const LTE_LOW_BANDS = new Set([5, 8, 12, 13, 14, 17, 18, 19, 20, 26, 28, 29, 71]);
+        const LTE_NO_4X4_BANDS = new Set([...LTE_LOW_BANDS, 21]);
+        const LTE_CLASS_CC_COUNT = { A: 1, B: 2, C: 2, D: 3, E: 4, F: 5 };
+
         function defaultNrDlFeatureId(band) {
             const b = Number(band) > 10000 ? Number(band) - 10000 : Number(band);
             if ([79, 78, 77, 41, 40].includes(b)) return 17;
@@ -1129,7 +1135,21 @@
                     updateDependentValues(ccItem, 0);
                 }
             }
-            if (!newIsNR) updateLteMarkers(ccItem);
+            if (!newIsNR) {
+                const currentMimo = parseLteFeatureIndex({ FeatureIndex: ccItem.dlFeatureIndex || 0, ran: 1 }).mimo;
+                const cCount = lteMarkerCount(ccItem.bwClassDL);
+                if (LTE_NO_4X4_BANDS.has(newBand)) {
+                    let targetMimo = currentMimo;
+                    if (currentMimo === 1 || currentMimo === 0) targetMimo = 2;
+                    else if (currentMimo === 3) targetMimo = 4;
+                    ccItem.dlFeatureIndex = cCount ? parseLteFeatureIndex({ mimo: targetMimo, count: cCount, ran: 1 }).FeatureIndex : 0;
+                } else if (LTE_NO_4X4_BANDS.has(oldBand) || currentMimo === 2 || currentMimo === 0) {
+                    let targetMimo = 1;
+                    if (currentMimo === 4) targetMimo = 3;
+                    ccItem.dlFeatureIndex = cCount ? parseLteFeatureIndex({ mimo: targetMimo, count: cCount, ran: 1 }).FeatureIndex : 0;
+                }
+                updateLteMarkers(ccItem);
+            }
     
             generateTable(decodedData);
         }
@@ -1682,13 +1702,26 @@
         }
 
         function updateLteBand(comboIndex, componentIndex, value) {
-            const band = parseInt(value, 10);
+            const parsed = bandParseStr(value);
+            const band = (typeof parsed === "object" && parsed.band) ? parsed.band : parseInt(value, 10);
             if (isNaN(band) || band <= 0) {
                 alert("Band must be a positive integer.");
                 generateTable(decodedData);
                 return;
             }
-            decodedData.combos[comboIndex].components[componentIndex].band = band;
+            const component = decodedData.combos[comboIndex].components[componentIndex];
+            component.band = band;
+            if (typeof parsed === "object" && parsed.bwClassDL) {
+                const classCode = parsed.bwClassDL === 1 ? 32768 :
+                                  parsed.bwClassDL === 2 ? 16384 :
+                                  parsed.bwClassDL === 3 ? 8192 :
+                                  parsed.bwClassDL === 4 ? 4096 :
+                                  parsed.bwClassDL === 5 ? 2048 : 1024;
+                component.bwClassMimoDl = classCode | (component.bwClassMimoDl & 1);
+            }
+            if (LTE_NO_4X4_BANDS.has(band)) {
+                component.bwClassMimoDl &= ~1;
+            }
             generateTable(decodedData);
         }
 
@@ -1847,10 +1880,6 @@
         }
 
         // LTE validation (ported from the Shannon LTE editor's rules)
-        const LTE_SDL_BANDS = new Set([29, 32, 75]);
-        const LTE_LOW_BANDS = new Set([5, 8, 12, 13, 14, 17, 18, 19, 20, 26, 28, 29, 71]);
-        const LTE_NO_4X4_BANDS = new Set([...LTE_LOW_BANDS, 21]);
-        const LTE_CLASS_CC_COUNT = { A: 1, B: 2, C: 2, D: 3, E: 4, F: 5 };
 
         // Per-combo LTE rules, shared by the validator and the auto-generator
         // so both apply the same domain policy. Returns a list of reason
@@ -2055,8 +2084,8 @@
                 : value;
             // Switch the row controls when the band type (NR <-> LTE) changes.
             if (field === "band") {
+                const parsed = bandParseStr(row.band);
                 if (currentMode === "nr") {
-                    const parsed = bandParseStr(row.band);
                     const oldParsed = bandParseStr(oldBand);
                     if (typeof parsed === "object" && parsed.band && parsed.band > 10000) {
                         const newDef = defaultNrDlFeatureId(parsed.band);
@@ -2065,18 +2094,24 @@
                         if (row.dlIds && row.dlIds.length === 1 && (row.dlIds[0] === oldDef || row.dlIds[0] === 1)) {
                             row.dlIds[0] = newDef;
                         }
+                    } else if (typeof parsed === "object" && parsed.band && parsed.band <= 10000) {
+                        const oldParsed = bandParseStr(oldBand);
+                        const oldIsNo4x4 = typeof oldParsed === "object" && oldParsed.band && LTE_NO_4X4_BANDS.has(oldParsed.band);
+                        if (LTE_NO_4X4_BANDS.has(parsed.band)) {
+                            if (row.mimo === 1 || !row.mimo) row.mimo = 2; // 2x2
+                        } else if (oldIsNo4x4 || row.mimo === 2) {
+                            row.mimo = 1; // back to 4x4
+                        }
+                    }
+                }
+                // Bands without 4x4 support default to 2x2 (LTE mode).
+                if (currentMode === "lte") {
+                    if (typeof parsed === "object" && parsed.band &&
+                        LTE_NO_4X4_BANDS.has(parsed.band) && (row.mimo === 1 || !row.mimo)) {
+                        row.mimo = 0;
                     }
                 }
                 renderAutoGenRows();
-            }
-            // Bands without 4x4 support default to 2x2 (LTE mode).
-            if (field === "band" && currentMode === "lte") {
-                const parsed = bandParseStr(row.band);
-                if (typeof parsed === "object" && parsed.band &&
-                    LTE_NO_4X4_BANDS.has(parsed.band) && row.mimo === 1) {
-                    row.mimo = 0;
-                    renderAutoGenRows();
-                }
             }
         }
 
@@ -2120,7 +2155,7 @@
                     // LTE (ENDC anchor) rows pick MIMO type and BW class,
                     // like the main UI.
                     if (isLteBand) {
-                        if (!row.mimo) row.mimo = 1; // Default 4x4
+                        if (!row.mimo) row.mimo = LTE_NO_4X4_BANDS.has(parsed.band) ? 2 : 1;
                         const classOptions = ["A", "B", "C", "D", "E", "F"].map((letter, i) => {
                             const value = i + 1;
                             const selected = (row.bwClass || parsed.bwClassDL || 1) === value ? "selected" : "";
@@ -3642,12 +3677,17 @@
         }
 
         function updateLteMarkers(featureObj) {
+            const no4x4 = LTE_NO_4X4_BANDS.has(Number(featureObj.band) || 0);
             for (const [classKey, idsKey, indexKey, direction] of [
                 ['bwClassDL', 'dlFeaturePerCCIds', 'dlFeatureIndex', 1],
                 ['bwClassUL', 'ulFeaturePerCCIds', 'ulFeatureIndex', 2],
             ]) {
                 const count = lteMarkerCount(featureObj[classKey]);
-                const mimo = parseLteFeatureIndex({ FeatureIndex: featureObj[indexKey] || 0, ran: direction }).mimo;
+                let mimo = parseLteFeatureIndex({ FeatureIndex: featureObj[indexKey] || 0, ran: direction }).mimo;
+                if (direction === 1 && no4x4) {
+                    if (mimo === 0 || mimo === 1) mimo = 2;
+                    else if (mimo === 3) mimo = 4;
+                }
                 if (count) featureObj[idsKey] = new Uint8Array(count);
                 else delete featureObj[idsKey];
                 featureObj[indexKey] = count
