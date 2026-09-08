@@ -662,7 +662,6 @@
             <div id="recompileBtn" style="display: none;">
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
-                <button title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" id="fixPlmnBtn" onclick="fixLtePlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
                 <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
             </div>
@@ -694,6 +693,7 @@
             <h3>Tools</h3>
             <div id="toolsOptions">
                 <button class="zipPickBtn" id="toolSortBtn" onclick="toolSortCombos()">Sort Combos</button>
+                <button class="zipPickBtn" id="toolFixPlmnBtn" title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" onclick="toolFixPlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button class="zipPickBtn" onclick="toolDeleteAllCombos()">Delete all combos</button>
                 <button class="zipPickBtn" onclick="toolValidate()">Validate</button>
             </div>
@@ -1321,7 +1321,6 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
-            document.getElementById("fixPlmnBtn").style.display = "none";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3+7c+n78c";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1573,7 +1572,6 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
-            document.getElementById("fixPlmnBtn").style.display = "inline-block";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 1+3C+8A";
             document.getElementById("pageSizeSelector").style.display = "block";
@@ -1747,6 +1745,11 @@
             generateTable(decodedData);
         }
 
+        function toolFixPlmnMapping() {
+            closeToolsModal();
+            fixLtePlmnMapping();
+        }
+
         // ------------------------------------------------------------------
         // Tools modal (sort / delete all / validate)
         // ------------------------------------------------------------------
@@ -1754,6 +1757,8 @@
         function openToolsModal() {
             document.getElementById("toolSortBtn").style.display =
                 currentMode === "nr" ? "block" : "none";
+            document.getElementById("toolFixPlmnBtn").style.display =
+                currentMode === "lte" ? "block" : "none";
             document.getElementById("toolsOutput").textContent = "";
             document.getElementById("toolsModal").style.display = "block";
         }
@@ -2910,7 +2915,6 @@
             tableHTML += `</table>`;
             document.getElementById("tableContainer").innerHTML = tableHTML;
             document.getElementById("recompileBtn").style.display = "block";
-            document.getElementById("fixPlmnBtn").style.display = "none";
             document.getElementById("bandFilter").style.display = "block";
             document.getElementById("bandFilterInput").placeholder = "Filter e.g., 520-03 or VZW";
             document.getElementById("pageSizeSelector").style.display = "block";
