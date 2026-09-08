@@ -221,6 +221,13 @@
         .field-label {
             display: none;
         }
+        select.is-none {
+            color: transparent !important;
+        }
+        select.is-none option {
+            color: light-dark(#111, #eee) !important;
+            background-color: light-dark(#fff, var(--grey));
+        }
         @media (max-width: 768px) {
 
             .main-table {
@@ -1545,7 +1552,7 @@
                         </td>
                         <td class="lte-field lte-dl-class"><span class="field-label">DL</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlClass', this.value)">${dlClassOptions}</select></td>
                         <td class="lte-field lte-dl-mimo"><span class="field-label">MIMO</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'dlMimo', this.value)">${dlMimoOptions}</select></td>
-                        <td class="lte-field lte-ul-class"><span class="field-label">UL</span><select onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'ulClass', this.value)">${ulClassOptions}</select></td>
+                        <td class="lte-field lte-ul-class"><span class="field-label">UL</span><select class="${ulValue === 0 ? 'is-none' : ''}" onchange="updateLteComponent(${comboIndex}, ${componentIndex}, 'ulClass', this.value)">${ulClassOptions}</select></td>
                     </tr>`;
                 });
 
