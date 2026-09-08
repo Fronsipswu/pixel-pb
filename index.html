@@ -1102,6 +1102,7 @@
         
                 console.log(`Band type changed from ${oldIsNR ? 'NR' : 'LTE'} to ${newIsNR ? 'NR' : 'LTE'}, features reset`);
             }
+            if (!newIsNR) updateLteMarkers(ccItem);
     
             generateTable(decodedData);
         }
@@ -2440,17 +2441,18 @@
             }
 
             const candidates = [];
-            // LTE anchors keep their superset feature configuration
-            // (marker ids + feature index) across class downgrades; only
-            // bwClassDL changes (full class + class A variant). Marker
-            // array length = standard carrier count per class.
+            // Each LTE variant carries the markers and feature index for its own class.
             const lteVariants = new Map();
             lteRows.forEach((row) => {
                 const count = LTE_CLASS_CC_COUNT[String.fromCharCode(64 + row.letter)] || 1;
                 const dlIds = new Uint8Array(count);
                 const dlFeatureIndex = parseLteFeatureIndex({ mimo: row.mimo, count, ran: 1 }).FeatureIndex;
                 const variants = [{ letter: row.letter, dlIds, dlFeatureIndex }];
-                if (row.letter > 1) variants.push({ letter: 1, dlIds, dlFeatureIndex });
+                if (row.letter > 1) variants.push({
+                    letter: 1,
+                    dlIds: new Uint8Array(1),
+                    dlFeatureIndex: parseLteFeatureIndex({ mimo: row.mimo, count: 1, ran: 1 }).FeatureIndex,
+                });
                 lteVariants.set(row, variants);
             });
             for (const nrSubset of allSubsets(nrRows)) {
@@ -2975,8 +2977,7 @@
         }
 
         function parseLteFeatureIndex({ FeatureIndex = null, mimo = null, count = null, ran }) {
-            // Account for C class being 2cc not 3
-            count === 3 && (count = 2);
+            // count is the carrier count, not the numeric bandwidth class.
 
             if (FeatureIndex !== null) {
 
@@ -3411,12 +3412,12 @@
             } else if (ran > 0) {
                 // LTE DL
                 if (featureType === 0) {
-                    FeatureIndex = parseLteFeatureIndex( {mimo: newValue, count: featureObj.bwClassDL, ran: 1}).FeatureIndex;
+                    FeatureIndex = parseLteFeatureIndex( {mimo: newValue, count: lteMarkerCount(featureObj.bwClassDL), ran: 1}).FeatureIndex;
                     featureObj.dlFeatureIndex = FeatureIndex;
                 }
                 // LTE UL
                 if (featureType === 1) {
-                    FeatureIndex = parseLteFeatureIndex( {mimo: newValue, count: featureObj.bwClassUL, ran: 2}).FeatureIndex;
+                    FeatureIndex = parseLteFeatureIndex( {mimo: newValue, count: lteMarkerCount(featureObj.bwClassUL), ran: 2}).FeatureIndex;
                     featureObj.ulFeatureIndex = FeatureIndex;
                 }
             }
@@ -3512,7 +3513,43 @@
             return candidates[0]?.featureId || featureId;
         }
 
+        function lteMarkerCount(bwClass) {
+            return LTE_CLASS_CC_COUNT[String.fromCharCode(64 + Number(bwClass))] || 0;
+        }
+
+        function updateLteMarkers(featureObj) {
+            for (const [classKey, idsKey, indexKey, direction] of [
+                ['bwClassDL', 'dlFeaturePerCCIds', 'dlFeatureIndex', 1],
+                ['bwClassUL', 'ulFeaturePerCCIds', 'ulFeatureIndex', 2],
+            ]) {
+                const count = lteMarkerCount(featureObj[classKey]);
+                const mimo = parseLteFeatureIndex({ FeatureIndex: featureObj[indexKey] || 0, ran: direction }).mimo;
+                if (count) featureObj[idsKey] = new Uint8Array(count);
+                else delete featureObj[idsKey];
+                featureObj[indexKey] = count
+                    ? parseLteFeatureIndex({ mimo, count, ran: direction }).FeatureIndex
+                    : 0;
+            }
+        }
+
+        function stepLteClass(featureObj, featureType, delta) {
+            const classKey = featureType === 'dlFeaturePerCCIds' ? 'bwClassDL' : 'bwClassUL';
+            const allowB = isAllowedLteClassB(featureObj)
+                && (classKey === 'bwClassDL' || featureObj.bwClassDL === 2);
+            const classes = allowB ? [0, 1, 2, 3, 4, 5, 6] : [0, 1, 3, 4, 5, 6];
+            const current = Number(featureObj[classKey]) || 0;
+            featureObj[classKey] = delta > 0
+                ? (classes.find(value => value > current) ?? current)
+                : ([...classes].reverse().find(value => value < current) ?? 0);
+            updateLteMarkers(featureObj);
+        }
+
         function updateDependentValues(featureObj, ran) {
+            if (ran > 0) {
+                // B and C both use two carriers: preserve the explicitly selected class.
+                updateLteMarkers(featureObj);
+                return;
+            }
             const dlFeatureIds = featureObj.dlFeaturePerCCIds ? Array.from(featureObj.dlFeaturePerCCIds) : [];
             const ulFeatureIds = featureObj.ulFeaturePerCCIds ? Array.from(featureObj.ulFeaturePerCCIds) : [];
             let dlFeatureCount = dlFeatureIds.length;
@@ -3524,25 +3561,16 @@
             let dlMaxScs = decodedData.dlFeaturePerCCList?.[dlFeatureId - 1]?.maxScs || 0;
             let maxMimoCb = decodedData.ulFeaturePerCCList?.[ulFeatureId - 1]?.maxMimoCb || 0;
 
-            // Bands with LTE class B support use consecutive classes by feature
-            // count (A, B, C, D...). Other LTE bands keep the legacy A, C, D...
-            // mapping where class B is skipped.
-            const useConsecutiveLteClasses = ran > 0 && isAllowedLteClassB(featureObj);
-            const calculatedDlClass = calculateNrBandwidthClass(
+            featureObj.bwClassDL = calculateNrBandwidthClass(
                 dlFeatureIds,
                 decodedData.dlFeaturePerCCList
             );
-            featureObj.bwClassDL = useConsecutiveLteClasses ? dlFeatureCount : calculatedDlClass;
 
-            // LTE UL may use class B only when the corresponding DL class is B.
             // NR UL remains independent and uses its own selected bandwidths.
-            const calculatedUlClass = calculateNrBandwidthClass(
+            featureObj.bwClassUL = calculateNrBandwidthClass(
                 ulFeatureIds,
                 decodedData.ulFeaturePerCCList
             );
-            const useConsecutiveLteUlClasses = useConsecutiveLteClasses
-                && featureObj.bwClassDL === 2;
-            featureObj.bwClassUL = useConsecutiveLteUlClasses ? ulFeatureCount : calculatedUlClass;
 
             // Set dlFeatureIndex
             if (dlMaxScs !== 0) {
@@ -3551,21 +3579,7 @@
             if (dlFeatureCount === 0) featureObj.dlFeatureIndex = 0;
 
             // Set ulFeatureIndex based on maxMimoCb
-            if (ran === 0) {
-                featureObj.ulFeatureIndex = (maxMimoCb === 2) ? 2 : (ulFeatureCount > 0 ? 1 : 0);
-            }
-            
-            // LTE DL
-            if (ran === 1) {
-                mimo = parseLteFeatureIndex( {FeatureIndex: featureObj.dlFeatureIndex, ran: 1}).mimo;
-                FeatureIndex = parseLteFeatureIndex( { mimo: mimo, count: featureObj.bwClassDL, ran: 1}).FeatureIndex;
-                featureObj.dlFeatureIndex = FeatureIndex;
-            // LTE UL
-            } else if (ran === 2) {
-                mimo = parseLteFeatureIndex( {FeatureIndex: featureObj.ulFeatureIndex, ran: 2}).mimo;
-                FeatureIndex = parseLteFeatureIndex( { mimo: mimo, count: featureObj.bwClassUL, ran: 2}).FeatureIndex;
-                featureObj.ulFeatureIndex = FeatureIndex;
-            }
+            featureObj.ulFeatureIndex = (maxMimoCb === 2) ? 2 : (ulFeatureCount > 0 ? 1 : 0);
         }
 
         // Function to add a new index to dlFeaturePerCCIds or ulFeaturePerCCIds
@@ -3574,6 +3588,12 @@
 
             
             let featureObj = decodedData.ComboGroups[groupIndex].combo[comboIndex].cc[ccIndex];
+
+            if (ran > 0) {
+                stepLteClass(featureObj, featureType, 1);
+                generateTable(decodedData);
+                return;
+            }
 
             // Ensure correct type (convert object to Uint8Array if needed)
             if (!featureObj[featureType] || !(featureObj[featureType] instanceof Uint8Array)) {
@@ -3625,6 +3645,12 @@
             console.log(`Removing last key from ${featureType} in group ${groupIndex}, combo ${comboIndex}, cc ${ccIndex}`);
 
             let featureObj = decodedData.ComboGroups[groupIndex].combo[comboIndex].cc[ccIndex];
+
+            if (ran > 0) {
+                stepLteClass(featureObj, featureType, -1);
+                generateTable(decodedData);
+                return;
+            }
 
             if (!featureObj[featureType] || !(featureObj[featureType] instanceof Uint8Array)) return;
 
