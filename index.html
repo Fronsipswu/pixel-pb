@@ -1075,6 +1075,14 @@
             generateTable(decodedData);
         }
 
+        function defaultNrDlFeatureId(band) {
+            const b = Number(band) > 10000 ? Number(band) - 10000 : Number(band);
+            if ([79, 78, 77, 41, 40].includes(b)) return 17;
+            if ([1, 2, 4, 3, 7, 25, 66, 75].includes(b)) return 9;
+            if ([5, 8, 26, 28].includes(b)) return 4;
+            return 1;
+        }
+
         // Function to update band number
         function updateBand(realGroupIndex, localComboIndex, ccIndex, newValue) {
             let oldBand = decodedData.ComboGroups[realGroupIndex].combo[localComboIndex].cc[ccIndex].band;
@@ -1104,14 +1112,22 @@
         
                 // Initialize appropriate feature arrays for the new band type
                 if (newIsNR) {
-                    ccItem.dlFeaturePerCCIds = new Uint8Array(0);
+                    ccItem.dlFeaturePerCCIds = new Uint8Array([defaultNrDlFeatureId(newBand)]);
                     ccItem.ulFeaturePerCCIds = new Uint8Array(0);
+                    updateDependentValues(ccItem, 0);
                 } else {
                     // For LTE bands, remove the Uint8Array properties entirely
                     // They will be recreated when features are added
                 }
         
                 console.log(`Band type changed from ${oldIsNR ? 'NR' : 'LTE'} to ${newIsNR ? 'NR' : 'LTE'}, features reset`);
+            } else if (newIsNR && ccItem.dlFeaturePerCCIds && ccItem.dlFeaturePerCCIds.length === 1) {
+                const oldDefault = defaultNrDlFeatureId(oldBand);
+                const currentDlId = ccItem.dlFeaturePerCCIds[0];
+                if (currentDlId === oldDefault || currentDlId === 1) {
+                    ccItem.dlFeaturePerCCIds[0] = defaultNrDlFeatureId(newBand);
+                    updateDependentValues(ccItem, 0);
+                }
             }
             if (!newIsNR) updateLteMarkers(ccItem);
     
@@ -1958,7 +1974,7 @@
             const firstNo = list.findIndex((f) => Number(f.maxMimoCb) !== 2);
             return {
                 band: "n78",
-                dlIds: [1],
+                dlIds: [defaultNrDlFeatureId(78)],
                 ulId: firstNo === -1 ? 0 : firstNo + 1,
                 ulMimo: 0,
             };
@@ -2033,11 +2049,26 @@
         function updateAutoGenRow(index, field, value) {
             const row = autoGenRows[index];
             if (!row) return;
+            const oldBand = row.band;
             row[field] = (field === "mimo" || field === "ulId" || field === "ulMimo" || field === "bwClass")
                 ? (parseInt(value, 10) || 0)
                 : value;
             // Switch the row controls when the band type (NR <-> LTE) changes.
-            if (field === "band") renderAutoGenRows();
+            if (field === "band") {
+                if (currentMode === "nr") {
+                    const parsed = bandParseStr(row.band);
+                    const oldParsed = bandParseStr(oldBand);
+                    if (typeof parsed === "object" && parsed.band && parsed.band > 10000) {
+                        const newDef = defaultNrDlFeatureId(parsed.band);
+                        const oldDef = (typeof oldParsed === "object" && oldParsed.band)
+                            ? defaultNrDlFeatureId(oldParsed.band) : 1;
+                        if (row.dlIds && row.dlIds.length === 1 && (row.dlIds[0] === oldDef || row.dlIds[0] === 1)) {
+                            row.dlIds[0] = newDef;
+                        }
+                    }
+                }
+                renderAutoGenRows();
+            }
             // Bands without 4x4 support default to 2x2 (LTE mode).
             if (field === "band" && currentMode === "lte") {
                 const parsed = bandParseStr(row.band);
@@ -3311,16 +3342,20 @@
                 "intraBandEnDcSupport": 0
             };
 
+            let defaultDlId = defaultNrDlFeatureId(10078);
+            let newCc = {
+                "band": 10078,
+                "bwClassDL": 1,
+                "bwClassUL": 0,
+                "dlFeatureIndex": 1,
+                "ulFeatureIndex": 0,
+                "dlFeaturePerCCIds": new Uint8Array([defaultDlId]),
+                "ulFeaturePerCCIds": new Uint8Array(0),
+            };
+            updateDependentValues(newCc, 0);
+
             let newCombo = {
-                "cc": [
-                    {
-                        "band": 10078,
-                        "bwClassDL": 0,
-                        "bwClassUL": 0,
-                        "dlFeatureIndex": 0,
-                        "ulFeatureIndex": 0,
-                    }
-                ],
+                "cc": [newCc],
                 "bitMask": 0
             };
 
@@ -3336,13 +3371,17 @@
         }
 
         function addBand(groupIndex, comboIndex) {
+            let defaultDlId = defaultNrDlFeatureId(10078);
             let newBand = {
                 band: 10078,
-                bwClassDL: 0,
+                bwClassDL: 1,
                 bwClassUL: 0,
-                dlFeatureIndex: 0,
+                dlFeatureIndex: 1,
                 ulFeatureIndex: 0,
+                dlFeaturePerCCIds: new Uint8Array([defaultDlId]),
+                ulFeaturePerCCIds: new Uint8Array(0),
             };
+            updateDependentValues(newBand, 0);
 
             decodedData.ComboGroups[groupIndex].combo[comboIndex].cc.push(newBand);
             //console.log("After Adding Band:", JSON.stringify(decodedData, null, 2));
@@ -3688,10 +3727,14 @@
             // Convert Uint8Array to array to modify
             let featureArray = Array.from(featureObj[featureType]);
 
-            // If no previous element exists at this index, insert '1'
+            // If no previous element exists at this index, insert appropriate default
             if (featureArray.length === 0) {
                 if (ran === 0) {
-                    featureArray.push(1); // Insert '1' if the array is empty for nr
+                    if (featureType === 'dlFeaturePerCCIds') {
+                        featureArray.push(defaultNrDlFeatureId(featureObj.band));
+                    } else {
+                        featureArray.push(1);
+                    }
                 } else if (ran > 0) {
                     featureArray.push(0); // Insert '0' if the array is empty for lte
                 }
