@@ -708,6 +708,10 @@
             <h3>Auto generate combos</h3>
             <div id="autoGenRows"></div>
             <button title="Add another band to the superset" onclick="addAutoGenRow()">+ Add band</button>
+            <label id="autoGenLteClassCUlLabel" style="display: none;">
+                <input type="checkbox" id="autoGenLteClassCUl" checked>
+                Allow Class C ULCA
+            </label>
             <label id="autoGenUlcaLabel" style="display: none;">
                 <input type="checkbox" id="autoGenUlca">
                 Allow ULCA (uplink carrier aggregation; ULMIMO combos never get ULCA)
@@ -1984,6 +1988,7 @@
             document.getElementById("autoGenUlcaLabel").style.display =
                 currentMode === "nr" ? "block" : "none";
             const lteUlcaSub = currentMode === "lte" ? "block" : "none";
+            document.getElementById("autoGenLteClassCUlLabel").style.display = lteUlcaSub;
             document.getElementById("autoGenFddAaLabel").style.display = lteUlcaSub;
             document.getElementById("autoGenTddAaLabel").style.display = lteUlcaSub;
             document.getElementById("autoGenFddTddLabel").style.display = lteUlcaSub;
@@ -2212,11 +2217,70 @@
             return result;
         }
 
+        function kCombinations(list, k) {
+            if (k === 0) return [[]];
+            if (list.length < k) return [];
+            const result = [];
+            function backtrack(start, current) {
+                if (current.length === k) {
+                    result.push([...current]);
+                    return;
+                }
+                for (let i = start; i < list.length; i++) {
+                    current.push(list[i]);
+                    backtrack(i + 1, current);
+                    current.pop();
+                }
+            }
+            backtrack(0, []);
+            return result;
+        }
+
         function cartesian(listOfVariantArrays) {
             return listOfVariantArrays.reduce(
                 (acc, variants) => acc.flatMap((prefix) => variants.map((v) => [...prefix, v])),
                 [[]]
             );
+        }
+
+        function expandMimoLimitedVariants(components, maxStreams = 24) {
+            const calcStreams = (comps) => comps.reduce((sum, c) => {
+                const value = c.bwClassMimoDl || 0;
+                if (value <= 0) return sum;
+                return sum + (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) * ((value & 1) ? 4 : 2);
+            }, 0);
+
+            if (calcStreams(components) <= maxStreams) {
+                return [components.map((c) => ({ ...c }))];
+            }
+
+            const fourByFourIndices = [];
+            components.forEach((c, idx) => {
+                if ((c.bwClassMimoDl || 0) > 0 && (c.bwClassMimoDl & 1)) {
+                    fourByFourIndices.push(idx);
+                }
+            });
+
+            if (fourByFourIndices.length === 0) return [];
+
+            for (let downgradeCount = 1; downgradeCount <= fourByFourIndices.length; downgradeCount++) {
+                const validVariants = [];
+                for (const indicesToDowngrade of kCombinations(fourByFourIndices, downgradeCount)) {
+                    const candidate = components.map((c) => ({ ...c }));
+                    for (const idx of indicesToDowngrade) {
+                        candidate[idx].bwClassMimoDl &= ~1;
+                    }
+                    if (calcStreams(candidate) <= maxStreams) {
+                        validVariants.push(candidate);
+                    }
+                }
+                // Stop at the first downgrade count that produces legal configuration(s),
+                // matching the Shannon LTE editor's minimal downgrade logic.
+                if (validVariants.length > 0) {
+                    return validVariants;
+                }
+            }
+            return [];
         }
 
         function autoGenerateLte() {
@@ -2237,6 +2301,7 @@
             if (rows.length > DEVICE_LIMITS.autogenMaxRows) {
                 throw new Error(`Too many bands (max ${DEVICE_LIMITS.autogenMaxRows}); the number of combinations grows exponentially.`);
             }
+            const allowUlcaLteClassC = document.getElementById("autoGenLteClassCUl").checked;
             const allowUlcaLteFddAa = document.getElementById("autoGenFddAa").checked;
             const allowUlcaLteTddAa = document.getElementById("autoGenTddAa").checked;
             const allowUlcaLteFddTdd = document.getElementById("autoGenFddTdd").checked;
@@ -2265,7 +2330,7 @@
             let skippedInvalid = 0;
 
             for (const variantSet of candidates) {
-                const components = variantSet.map((v) => {
+                const baseComponents = variantSet.map((v) => {
                     let bwClassMimoDl = (LTE_CLASS_CC_COUNT[String.fromCharCode(64 + v.letter)] || 1) > 0
                         ? (v.letter === 1 ? 32768 : v.letter === 2 ? 16384 : v.letter === 3 ? 8192 :
                            v.letter === 4 ? 4096 : v.letter === 5 ? 2048 : 1024) |
@@ -2280,7 +2345,7 @@
                 });
 
                 // Represented carrier count must stay within [2, maxCc].
-                const representedCc = components.reduce((sum, c) => {
+                const representedCc = baseComponents.reduce((sum, c) => {
                     return sum + (LTE_CLASS_CC_COUNT[lteClassLetter(c.bwClassMimoDl)] || 1);
                 }, 0);
                 if (representedCc < 2 || representedCc > maxCc) {
@@ -2288,48 +2353,41 @@
                     continue;
                 }
 
-                // Minimally downgrade 4x4 components (largest first) when the
-                // 24 spatial stream limit is exceeded, like the Shannon LTE
-                // editor, instead of rejecting the candidate outright.
-                const totalStreams = () => components.reduce((sum, c) => {
-                    const value = c.bwClassMimoDl || 0;
-                    if (value <= 0) return sum;
-                    return sum + (LTE_CLASS_CC_COUNT[lteClassLetter(value)] || 1) * ((value & 1) ? 4 : 2);
-                }, 0);
-                while (totalStreams() > 24) {
-                    const candidates4x4 = components
-                        .filter((c) => (c.bwClassMimoDl || 0) > 0 && (c.bwClassMimoDl & 1))
-                        .sort((a, b) =>
-                            (LTE_CLASS_CC_COUNT[lteClassLetter(b.bwClassMimoDl)] || 1) -
-                            (LTE_CLASS_CC_COUNT[lteClassLetter(a.bwClassMimoDl)] || 1));
-                    if (candidates4x4.length === 0) break;
-                    candidates4x4[0].bwClassMimoDl &= ~1;
+                // If spatial streams exceed 24, generate all minimal MIMO downgrade
+                // permutations, exactly like Python's expand_mimo_limited_variants.
+                const dlMimoVariants = expandMimoLimitedVariants(baseComponents, 24);
+                if (dlMimoVariants.length === 0) {
+                    skippedInvalid++;
+                    continue;
                 }
 
-                const bands = new Set(components.map((c) => c.band));
-                const blocked = autogenBlockedBands(bands);
+                for (const components of dlMimoVariants) {
+                    const bands = new Set(components.map((c) => c.band));
+                    const blocked = autogenBlockedBands(bands);
 
-                // Group the legal component indexes per band. Single-band UL
-                // uses the last occurrence; same-band A+A ULCA (when enabled)
-                // uses the last two occurrences of a repeated band.
-                const legalIndexesByBand = new Map();
-                components.forEach((c, index) => {
-                    if (!blocked.has(c.band)) {
-                        if (!legalIndexesByBand.has(c.band)) {
-                            legalIndexesByBand.set(c.band, []);
+                    // Group the legal component indexes per band. Single-band UL
+                    // uses the last occurrence; same-band A+A ULCA (when enabled)
+                    // uses the last two occurrences of a repeated band.
+                    const legalIndexesByBand = new Map();
+                    components.forEach((c, index) => {
+                        if (!blocked.has(c.band)) {
+                            if (!legalIndexesByBand.has(c.band)) {
+                                legalIndexesByBand.set(c.band, []);
+                            }
+                            legalIndexesByBand.get(c.band).push(index);
                         }
-                        legalIndexesByBand.get(c.band).push(index);
-                    }
-                });
-                if (legalIndexesByBand.size === 0) continue; // No legal uplink
+                    });
+                    if (legalIndexesByBand.size === 0) continue; // No legal uplink
 
-                // UL variants: single-band UL always; inter-band and
-                // same-band A+A ULCA when the policy flags allow it.
-                const ulVariants = [];
-                for (const indexes of legalIndexesByBand.values()) {
-                    ulVariants.push([indexes[indexes.length - 1]]);
-                }
-                {
+                    // UL assignments: array of maps (index -> bwClassMimoUl)
+                    const ulVariants = [];
+
+                    // 1) Single-band Class-A UL (32768)
+                    for (const indexes of legalIndexesByBand.values()) {
+                        ulVariants.push(new Map([[indexes[indexes.length - 1], 32768]]));
+                    }
+
+                    // 2) Inter-band A+A ULCA
                     const legalBands = [...legalIndexesByBand.keys()];
                     for (let i = 0; i < legalBands.length; i++) {
                         for (let j = i + 1; j < legalBands.length; j++) {
@@ -2337,43 +2395,59 @@
                                 allowUlcaLteFddAa, allowUlcaLteTddAa, allowUlcaLteFddTdd)) continue;
                             const a = legalIndexesByBand.get(legalBands[i]);
                             const b = legalIndexesByBand.get(legalBands[j]);
-                            ulVariants.push([a[a.length - 1], b[b.length - 1]]);
+                            ulVariants.push(new Map([
+                                [a[a.length - 1], 32768],
+                                [b[b.length - 1], 32768]
+                            ]));
                         }
                     }
+
+                    // 3) Intra-band non-contiguous A+A ULCA
                     for (const indexes of legalIndexesByBand.values()) {
                         if (indexes.length >= 2) {
-                            ulVariants.push([indexes[indexes.length - 2], indexes[indexes.length - 1]]);
+                            ulVariants.push(new Map([
+                                [indexes[indexes.length - 2], 32768],
+                                [indexes[indexes.length - 1], 32768]
+                            ]));
                         }
                     }
-                }
 
-                for (const ulSlots of ulVariants) {
-                    const slotSet = new Set(ulSlots);
-                    const combo = {
-                        components: components.map((c, index) => ({
-                            ...c,
-                            bwClassMimoUl: slotSet.has(index) ? 32768 : 0,
-                        })),
-                        // Required proto2 fields: same all-PLMN policy as "+ Add combo".
-                        bcs: AUTOGEN_DEFAULT_BCS,
-                        configMaskLow: AUTOGEN_DEFAULT_CONFIG_MASK_LOW,
-                        configMaskHigh: AUTOGEN_DEFAULT_CONFIG_MASK_HIGH,
-                    };
-                    const key = autogenKey(combo);
-                    if (existing.has(key) || seen.has(key)) {
-                        skipped++;
-                        if (skippedList.length < 40) skippedList.push(lteComboSummary(combo));
-                        continue;
+                    // 4) Standalone Class-C UL (8192) when Allow Class C ULCA is enabled
+                    if (allowUlcaLteClassC) {
+                        components.forEach((c, idx) => {
+                            if (lteClassLetter(c.bwClassMimoDl) === "C" && !blocked.has(c.band)) {
+                                ulVariants.push(new Map([[idx, 8192]]));
+                            }
+                        });
                     }
-                    // Do not generate combos the validator would reject.
-                    if (lteComboIssues(combo).length > 0) {
-                        skippedInvalid++;
-                        continue;
-                    }
-                    seen.add(key);
-                    newCombos.push(combo);
-                    if (newCombos.length > DEVICE_LIMITS.autogenMaxResults) {
-                        throw new Error("Too many combinations; use fewer bands or classes.");
+
+                    for (const ulAssignment of ulVariants) {
+                        const combo = {
+                            components: components.map((c, index) => ({
+                                ...c,
+                                bwClassMimoUl: ulAssignment.has(index) ? ulAssignment.get(index) : 0,
+                            })),
+                            // Required proto2 fields: same all-PLMN policy as "+ Add combo".
+                            bcs: AUTOGEN_DEFAULT_BCS,
+                            configMaskLow: AUTOGEN_DEFAULT_CONFIG_MASK_LOW,
+                            configMaskHigh: AUTOGEN_DEFAULT_CONFIG_MASK_HIGH,
+                        };
+                        const key = autogenKey(combo);
+                        if (existing.has(key) || seen.has(key)) {
+                            skipped++;
+                            if (skippedList.length < 40) skippedList.push(lteComboSummary(combo));
+                            continue;
+                        }
+                        // Do not generate combos the validator would reject.
+                        if (lteComboIssues(combo).length > 0) {
+                            skippedInvalid++;
+                            continue;
+                        }
+                        seen.add(key);
+                        newCombos.push(combo);
+                        if (newCombos.length > DEVICE_LIMITS.autogenMaxResults) {
+                            throw new Error("Too many combinations; use fewer bands or classes.");
+                        }
                     }
                 }
             }
