@@ -1089,6 +1089,32 @@
             return 1;
         }
 
+        function findMatchingNrUlFeatureId(dlFeatureId, dlFeatureList, ulFeatureList) {
+            if (!dlFeatureId || !dlFeatureList || !ulFeatureList) return 1;
+            const dl = dlFeatureList[Number(dlFeatureId) - 1];
+            if (!dl) return 1;
+
+            const dlScs = Number(dl.maxScs) || 0;
+            const dlBw = Number(dl.maxBw) || 0;
+            const dl90M = Boolean(dl.bw90MHzSupported);
+
+            const candidates = [];
+            ulFeatureList.forEach((ul, index) => {
+                if (Number(ul.maxScs) === dlScs &&
+                    Number(ul.maxBw) === dlBw &&
+                    (Number(ul.maxMimoCb) || 0) !== 2) {
+                    candidates.push({ id: index + 1, ul });
+                }
+            });
+
+            if (candidates.length === 0) return 1;
+
+            const match90M = candidates.find(c => Boolean(c.ul.bw90MHzSupported) === dl90M);
+            if (match90M) return match90M.id;
+
+            return candidates[0].id;
+        }
+
         // Function to update band number
         function updateBand(realGroupIndex, localComboIndex, ccIndex, newValue) {
             let oldBand = decodedData.ComboGroups[realGroupIndex].combo[localComboIndex].cc[ccIndex].band;
@@ -1131,7 +1157,26 @@
                 const oldDefault = defaultNrDlFeatureId(oldBand);
                 const currentDlId = ccItem.dlFeaturePerCCIds[0];
                 if (currentDlId === oldDefault || currentDlId === 1) {
-                    ccItem.dlFeaturePerCCIds[0] = defaultNrDlFeatureId(newBand);
+                    const newDlId = defaultNrDlFeatureId(newBand);
+                    ccItem.dlFeaturePerCCIds[0] = newDlId;
+
+                    // Automatically update paired UL feature set if present
+                    if (ccItem.ulFeaturePerCCIds && ccItem.ulFeaturePerCCIds.length === 1) {
+                        const oldPairedUlId = findMatchingNrUlFeatureId(
+                            oldDefault,
+                            decodedData.dlFeaturePerCCList,
+                            decodedData.ulFeaturePerCCList
+                        );
+                        const currentUlId = ccItem.ulFeaturePerCCIds[0];
+                        if (currentUlId === oldPairedUlId || currentUlId === 1) {
+                            ccItem.ulFeaturePerCCIds[0] = findMatchingNrUlFeatureId(
+                                newDlId,
+                                decodedData.dlFeaturePerCCList,
+                                decodedData.ulFeaturePerCCList
+                            );
+                        }
+                    }
+
                     updateDependentValues(ccItem, 0);
                 }
             }
@@ -2093,6 +2138,12 @@
                             ? defaultNrDlFeatureId(oldParsed.band) : 1;
                         if (row.dlIds && row.dlIds.length === 1 && (row.dlIds[0] === oldDef || row.dlIds[0] === 1)) {
                             row.dlIds[0] = newDef;
+                            if (row.ulId) {
+                                const oldPairedUl = findMatchingNrUlFeatureId(oldDef, decodedData.dlFeaturePerCCList, decodedData.ulFeaturePerCCList);
+                                if (row.ulId === oldPairedUl || row.ulId === 1) {
+                                    row.ulId = findMatchingNrUlFeatureId(newDef, decodedData.dlFeaturePerCCList, decodedData.ulFeaturePerCCList);
+                                }
+                            }
                         }
                     } else if (typeof parsed === "object" && parsed.band && parsed.band <= 10000) {
                         const oldParsed = bandParseStr(oldBand);
@@ -3773,7 +3824,13 @@
                     if (featureType === 'dlFeaturePerCCIds') {
                         featureArray.push(defaultNrDlFeatureId(featureObj.band));
                     } else {
-                        featureArray.push(1);
+                        const dlIds = featureObj.dlFeaturePerCCIds ? Array.from(featureObj.dlFeaturePerCCIds) : [];
+                        const pairedUlId = findMatchingNrUlFeatureId(
+                            dlIds[0],
+                            decodedData.dlFeaturePerCCList,
+                            decodedData.ulFeaturePerCCList
+                        );
+                        featureArray.push(pairedUlId);
                     }
                 } else if (ran > 0) {
                     featureArray.push(0); // Insert '0' if the array is empty for lte
@@ -3792,6 +3849,14 @@
                     nextValue = findNrClassBCompanionFeatureId(
                         lastValue,
                         decodedData.dlFeaturePerCCList
+                    );
+                } else if (ran === 0 && featureType === 'ulFeaturePerCCIds') {
+                    const dlIds = featureObj.dlFeaturePerCCIds ? Array.from(featureObj.dlFeaturePerCCIds) : [];
+                    const targetDlId = dlIds[featureArray.length] || dlIds[0];
+                    nextValue = findMatchingNrUlFeatureId(
+                        targetDlId,
+                        decodedData.dlFeaturePerCCList,
+                        decodedData.ulFeaturePerCCList
                     );
                 }
 
