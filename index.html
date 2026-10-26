@@ -2259,12 +2259,12 @@
             const bands = plmnModalSelectedBands();
             const label = document.getElementById("plmnBandMatchCount");
             if (bands.size === 0) {
-                label.textContent = `all ${total} combos (no band filter)`;
+                label.textContent = `all ${total} combos`;
                 return;
             }
             const count = plmnBandTargetCombos().length;
             label.textContent =
-                `${count} of ${total} combos contain one of ` +
+                `${count} of ${total} combos contain ` +
                 [...bands].map((band) => "B" + band).join(", ");
         }
 
