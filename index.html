@@ -75,6 +75,50 @@
             min-width: 60px;
             text-align: center;
         }
+        /* Clickable PLMN (conf_id) selector shown in every LTE combo row */
+        .plmn-select-btn {
+            display: block;
+            width: 100%;
+            max-width: 320px;
+            margin: 0 auto;
+            font-size: 12px;
+            padding: 3px 6px;
+            cursor: pointer;
+            white-space: normal;
+            word-break: break-word;
+        }
+        .confmask-nums {
+            font-size: 10px;
+            font-family: monospace;
+            word-break: break-all;
+            margin-top: 3px;
+            opacity: 0.75;
+        }
+        /* Scrollable conf_id PLMN picker inside the PLMN modal */
+        #plmnOptions {
+            max-height: 40vh;
+            overflow-y: auto;
+            margin: 8px 0;
+            border: 1px solid light-dark(var(--grey), var(--grey));
+            padding: 4px 8px;
+            background-color: light-dark(var(--offwhite), var(--grey));
+        }
+        #plmnOptions label {
+            display: block;
+            white-space: nowrap;
+            font-size: 13px;
+            padding: 1px 0;
+        }
+        .plmn-values {
+            font-family: monospace;
+            font-size: 12px;
+            margin: 8px 0;
+            word-break: break-all;
+        }
+        .plmn-warning {
+            color: light-dark(var(--darkred), var(--lightred));
+            font-size: 12px;
+        }
         /* Alternate combo rows: subtle blue tint vs the default grey.
            Controls inside tinted cards go cyan; grey cards keep the old colors. */
         .main-table tr.combo-row:nth-child(odd) {
@@ -313,28 +357,14 @@
             .main-table .combo-row > td.confmask {
                 flex: 0 1 auto;
                 display: inline-flex !important;
-                align-items: center;
+                flex-direction: column;
+                align-items: stretch;
                 font-size: 11px;
-                font-family: monospace;
                 padding: 2px 6px;
                 margin: 4px 6px 2px 0;
                 background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
                 border-radius: 3px;
                 border: none;
-            }
-            .main-table .combo-row > td.confmask:nth-of-type(2)::before {
-                content: "Conf 0-63: ";
-                font-family: Arial, sans-serif;
-                font-weight: 600;
-                margin-right: 4px;
-                opacity: 0.7;
-            }
-            .main-table .combo-row > td.confmask:nth-of-type(3)::before {
-                content: "Conf 64-95: ";
-                font-family: Arial, sans-serif;
-                font-weight: 600;
-                margin-right: 4px;
-                opacity: 0.7;
             }
             .main-table .combo-row > td.buttons { /* Container for JSON, Copy, Remove buttons */
                 flex: 1 1 100%;
@@ -699,6 +729,29 @@
             </div>
             <pre id="toolsOutput" spellcheck="false" style="white-space: pre-wrap; max-height: 50vh; overflow: auto;"></pre>
             <button class="modalbtn" onclick="closeToolsModal()">Close</button>
+        </div>
+    </div>
+
+    <!-- conf_id PLMN mapping modal (LTE) -->
+    <div id="plmnModal" class="modal">
+        <div class="modal-content" style="width: 40%; min-width: 300px;">
+            <h3 id="plmnModalTitle">Select conf_id PLMNs</h3>
+            <label>
+                <input type="checkbox" id="plmnAll" onchange="onPlmnAllToggled()">
+                All PLMNs (conf ids 0-84, same as Fix plmn mapping)
+            </label>
+            <div id="plmnOptions"></div>
+            <div class="plmn-warning" id="plmnUnnamedWarning" style="display: none;"></div>
+            <div class="plmn-values">
+                conf id 0-63: <span id="plmnCalculatedLow"></span><br>
+                conf id 64-95: <span id="plmnCalculatedHigh"></span>
+            </div>
+            <label>
+                <input type="checkbox" id="plmnApplyAll">
+                Apply to all combos
+            </label>
+            <button class="modalbtn" onclick="closePlmnModal()">Cancel</button>
+            <button class="modalbtn" onclick="applyPlmnSelection()">Apply</button>
         </div>
     </div>
 
@@ -1484,6 +1537,168 @@
         const AUTOGEN_DEFAULT_CONFIG_MASK_LOW = "18445899642336968703"; // conf id 0-63
         const AUTOGEN_DEFAULT_CONFIG_MASK_HIGH = "2097151";             // conf id 64-95
         const AUTOGEN_DEFAULT_BCS = 2147483648;                         // BCS 0
+
+        // Named conf_id PLMN groups (ported from the Shannon LTE editor's
+        // conf_id.py). Ids 31, 32, 48, 49 and 85-95 have no known names and
+        // are therefore not part of the "All PLMNs" mask.
+        const LTE_CONF_ID_NAMES = {
+            0: "Default",
+            1: "VZW",
+            2: "TMO",
+            3: "ATT",
+            4: "SPRINT",
+            5: "USC",
+            6: "DISH",
+            7: "ROGERS",
+            8: "TELUS",
+            9: "BELL",
+            10: "FREEDOM",
+            11: "VIDEOTRON",
+            12: "RAKUTEN",
+            13: "DCM",
+            14: "SBM",
+            15: "KDDI",
+            16: "DT_DE",
+            17: "VF_DE",
+            18: "O2_DE",
+            19: "VF_UK",
+            20: "EE",
+            21: "O2_UK",
+            22: "3_UK",
+            23: "VF_IE",
+            24: "ORANGE_FR",
+            25: "BOUYGUES",
+            26: "SFR",
+            27: "FREE_FR",
+            28: "MOVISTAR_ES",
+            29: "VF_ES",
+            30: "ORANGE_ES",
+            33: "DT_PL",
+            34: "VF_IT",
+            35: "TIM_IT",
+            36: "WINDTRE",
+            37: "VF_TR",
+            38: "VF_RO",
+            39: "TELSTRA",
+            40: "OPTUS",
+            41: "VHA",
+            42: "TWM",
+            43: "FET",
+            44: "CHT",
+            45: "SINGTEL",
+            46: "STARHUB",
+            47: "M1",
+            50: "TEST_LAB",
+            51: "CSPIRE",
+            52: "CELLCOM",
+            53: "T_STAR",
+            54: "RJIO",
+            55: "VF_CZ",
+            56: "3_IE",
+            57: "VODA_IDEA",
+            58: "VF_IN",
+            59: "AIRTEL",
+            60: "EU_COMMON",
+            61: "GOOGLE_COMCAST_",
+            62: "EU_GENERIC_3CA",
+            63: "APAC_COMMON",
+            64: "EU_COMMON1",
+            65: "1_1_DE",
+            66: "TEST_FIELD_NA",
+            67: "TEST_FIELD_ROW",
+            68: "TELIA_NO",
+            69: "TELIA_SE",
+            70: "TELIA_DK",
+            71: "FIRSTNET",
+            72: "IN_GEN",
+            73: "IN_GEN2",
+            74: "TELENOR_NO",
+            75: "KPN_NL",
+            76: "TMO_NL",
+            77: "VF_NL",
+            78: "CA_COMMON",
+            79: "SASKTEL",
+            80: "ORANGE_BE",
+            81: "NA_COMMON",
+            82: "MX_COMMON",
+            83: "MY_COMMON",
+            84: "VZWPRIVATE_US",
+        };
+        // Sorted list of named conf_ids; id 0 (Default) is implicit and the
+        // remaining ids follow the desktop editor's numbering.
+        const LTE_CONF_ID_LIST = Object.keys(LTE_CONF_ID_NAMES).map(Number);
+        // All named conf_ids set in one bitmask = exactly the "Fix plmn
+        // mapping" masks below (low is a string because a uint64 must never
+        // pass through Number()).
+        const ALL_PLMN_MASK_LOW = "18445899642336968703"; // conf id 0-63 (all named)
+        const ALL_PLMN_MASK_HIGH = "2097151";             // conf id 64-84
+        // The set of conf_ids enabled by ALL_PLMN_MASK, computed once.
+        const ALL_PLMN_CONF_IDS = new Set();
+
+        // Decode the two protobuf masks into named conf_ids plus any bits
+        // that fall outside LTE_CONF_ID_NAMES (raw ids 31/32/48/49/85+).
+        function masksToConfIdInfo(lowMask, highMask) {
+            const low = BigInt(String(lowMask || "0"));
+            const high = BigInt(Number(highMask) || 0);
+            const named = [];
+            const unnamed = [];
+            for (let confId = 0; confId < 64; confId++) {
+                if ((low >> BigInt(confId)) & 1n) {
+                    (LTE_CONF_ID_NAMES[confId] !== undefined ? named : unnamed).push(confId);
+                }
+            }
+            for (let confId = 64; confId < 96; confId++) {
+                if ((high >> BigInt(confId - 64)) & 1n) {
+                    (LTE_CONF_ID_NAMES[confId] !== undefined ? named : unnamed).push(confId);
+                }
+            }
+            return { named, unnamed };
+        }
+
+        // Convert a set of conf_ids back into the two mask strings.
+        function confIdInfoToMasks(namedConfIds) {
+            let low = 0n;
+            let high = 0n;
+            namedConfIds.forEach((confId) => {
+                if (confId < 64) {
+                    low |= 1n << BigInt(confId);
+                } else {
+                    high |= 1n << BigInt(confId - 64);
+                }
+            });
+            // uint64 (low) stays a string to avoid precision loss; uint32
+            // (high) fits exactly in a Number, which the proto field expects.
+            return { low: low.toString(), high: Number(high) };
+        }
+
+        (function buildAllPlmnConfIds() {
+            // low: every id <= 63 named like Default; high: 2097151 = ids 64-84.
+            const info = masksToConfIdInfo(ALL_PLMN_MASK_LOW, ALL_PLMN_MASK_HIGH);
+            info.named.forEach((confId) => ALL_PLMN_CONF_IDS.add(confId));
+        })();
+
+        // True when a combo's masks enable every named PLMN group and nothing
+        // else (i.e. the "all PLMNs" default applied by Fix plmn mapping).
+        function isAllPlmnMask(lowMask, highMask) {
+            const info = masksToConfIdInfo(lowMask, highMask);
+            if (info.unnamed.length > 0) return false;
+            if (info.named.length !== ALL_PLMN_CONF_IDS.size) return false;
+            return info.named.every((confId) => ALL_PLMN_CONF_IDS.has(confId));
+        }
+
+        // Short human-readable label for the PLMN selection shown per row:
+        // "All PLMNs", "Default + VZW + TMO", or "Custom (N groups)".
+        function plmnSelectionLabel(lowMask, highMask) {
+            if (isAllPlmnMask(lowMask, highMask)) return "All PLMNs";
+            const info = masksToConfIdInfo(lowMask, highMask);
+            if (info.named.length === 0) return "Custom (no PLMN groups)";
+            if (info.unnamed.length > 0) return "Custom (unknown conf bits)";
+            const maxNames = 4;
+            const names = info.named.map((confId) => LTE_CONF_ID_NAMES[confId]);
+            if (names.length <= maxNames) return names.join(" + ");
+            return names.slice(0, maxNames).join(" + ") + ` +${names.length - maxNames}`;
+        }
+
         // Class expansion per the Shannon LTE generator: a typed class also
         // produces every lower class in the A/C/D/E/F order (D -> A/C/D,
         // E -> A/C/D/E, F -> A/C/D/E/F; B keeps only its own A/B variants).
@@ -1575,8 +1790,7 @@
             <table class="main-table" style="border-collapse: collapse;">
                 <tr>
                     <th><button title="Add a new combo" onclick="addLteCombo()">+</button> Filtered LTE Combos: ${totalRows}/${data.combos.length}</th>
-                    <th>conf id 0-63</th>
-                    <th>conf id 64-95</th>
+                    <th title="PLMN groups this combo is available for; click a row's PLMN cell to edit">PLMN (conf id)</th>
                     <th>Actions</th>
                 </tr>`;
 
@@ -1644,8 +1858,11 @@
 
                 tableHTML += `<tr class="combo-row">
                     <td>${innerTableHTML}</td>
-                    <td class="confmask">${combo.configMaskLow}</td>
-                    <td class="confmask">${combo.configMaskHigh}</td>
+                    <td class="confmask" colspan="2">
+                        <button class="plmn-select-btn" title="Select conf_id PLMNs for this combo"
+                            onclick="openPlmnModal(${comboIndex})">PLMN: ${plmnSelectionLabel(combo.configMaskLow, combo.configMaskHigh)}</button>
+                        <div class="confmask-nums">conf 0-63: ${combo.configMaskLow}<br>conf 64-95: ${combo.configMaskHigh}</div>
+                    </td>
                     <td class="buttons">
                         <button title="Copy this combo" class="btn-copy" onclick="copyLteCombo(${comboIndex})">Copy</button>
                         <button title="Remove this combo" class="btn-rem" onclick="removeLteCombo(${comboIndex})">Remove</button>
@@ -1837,8 +2054,8 @@
                 return;
             }
             decodedData.combos.forEach((combo) => {
-                combo.configMaskLow = "18445899642336968703"; // conf id 0-63
-                combo.configMaskHigh = "2097151";             // conf id 64-95
+                combo.configMaskLow = ALL_PLMN_MASK_LOW;      // conf id 0-63 (all named)
+                combo.configMaskHigh = Number(ALL_PLMN_MASK_HIGH); // conf id 64-84
             });
             generateTable(decodedData);
         }
@@ -1847,6 +2064,130 @@
             closeToolsModal();
             fixLtePlmnMapping();
         }
+
+        // ------------------------------------------------------------------
+        // conf_id PLMN mapping modal (LTE)
+        // ------------------------------------------------------------------
+
+        let plmnModalComboIndex = null;
+
+        function openPlmnModal(comboIndex) {
+            if (currentMode !== "lte") return;
+            if (!decodedData || !decodedData.combos || !decodedData.combos[comboIndex]) return;
+            plmnModalComboIndex = comboIndex;
+
+            const combo = decodedData.combos[comboIndex];
+            const info = masksToConfIdInfo(combo.configMaskLow, combo.configMaskHigh);
+            const allPlmn = isAllPlmnMask(combo.configMaskLow, combo.configMaskHigh);
+
+            document.getElementById("plmnModalTitle").textContent =
+                `Select conf_id PLMNs (combo ${comboIndex})`;
+            document.getElementById("plmnAll").checked = allPlmn;
+
+            // One checkbox per named conf_id. Default (id 0) is always
+            // included and shown checked but disabled, like the desktop
+            // editor's "Select conf_id PLMNs" dialog.
+            let optionsHTML = "";
+            LTE_CONF_ID_LIST.forEach((confId) => {
+                if (confId === 0) {
+                    optionsHTML += `<label><input type="checkbox" class="plmn-option" data-conf-id="${confId}" checked disabled> ${LTE_CONF_ID_NAMES[confId]} (${confId}, always included)</label>`;
+                } else if (allPlmn) {
+                    optionsHTML += `<label><input type="checkbox" class="plmn-option" data-conf-id="${confId}"> ${LTE_CONF_ID_NAMES[confId]} (${confId})</label>`;
+                } else {
+                    const checked = info.named.includes(confId) ? " checked" : "";
+                    optionsHTML += `<label><input type="checkbox" class="plmn-option" data-conf-id="${confId}"${checked}> ${LTE_CONF_ID_NAMES[confId]} (${confId})</label>`;
+                }
+            });
+            document.getElementById("plmnOptions").innerHTML = optionsHTML;
+
+            const warning = document.getElementById("plmnUnnamedWarning");
+            if (info.unnamed.length > 0) {
+                warning.textContent =
+                    "Warning: this combo has conf bits without a known PLMN " +
+                    `name (ids ${info.unnamed.join(", ")}). Applying the ` +
+                    "selection below will drop them.";
+                warning.style.display = "block";
+            } else {
+                warning.textContent = "";
+                warning.style.display = "none";
+            }
+
+            document.getElementById("plmnApplyAll").checked = false;
+            updatePlmnPreview();
+            document.getElementById("plmnModal").style.display = "block";
+        }
+
+        function closePlmnModal() {
+            document.getElementById("plmnModal").style.display = "none";
+            plmnModalComboIndex = null;
+        }
+
+        // Selecting "All PLMNs" clears the individual checkboxes; picking any
+        // individual group clears the "All PLMNs" shortcut.
+        function onPlmnAllToggled() {
+            if (document.getElementById("plmnAll").checked) {
+                document.querySelectorAll("#plmnOptions .plmn-option").forEach((option) => {
+                    if (!option.disabled) option.checked = false;
+                });
+            }
+            updatePlmnPreview();
+        }
+
+        function onPlmnOptionToggled() {
+            document.getElementById("plmnAll").checked = false;
+            updatePlmnPreview();
+        }
+
+        // conf_ids implied by the current checkbox state (Default always).
+        function plmnModalSelectedConfIds() {
+            const selected = new Set([0]);
+            document.querySelectorAll("#plmnOptions .plmn-option:checked").forEach((option) => {
+                selected.add(Number(option.dataset.confId));
+            });
+            return selected;
+        }
+
+        // Live-computed mask values shown below the checkbox list.
+        function updatePlmnPreview() {
+            const masks = confIdInfoToMasks(plmnModalSelectedConfIds());
+            const allPlmn = document.getElementById("plmnAll").checked;
+            document.getElementById("plmnCalculatedLow").textContent =
+                allPlmn ? ALL_PLMN_MASK_LOW : masks.low;
+            document.getElementById("plmnCalculatedHigh").textContent =
+                allPlmn ? ALL_PLMN_MASK_HIGH : masks.high;
+        }
+
+        function applyPlmnSelection() {
+            if (plmnModalComboIndex === null) return;
+            const applyAll = document.getElementById("plmnApplyAll").checked;
+            const allPlmn = document.getElementById("plmnAll").checked;
+            const masks = allPlmn
+                ? { low: ALL_PLMN_MASK_LOW, high: Number(ALL_PLMN_MASK_HIGH) }
+                : confIdInfoToMasks(plmnModalSelectedConfIds());
+
+            if (applyAll) {
+                if (!confirm("Apply this conf_id mapping to all combos?")) return;
+                decodedData.combos.forEach((combo) => {
+                    combo.configMaskLow = masks.low;
+                    combo.configMaskHigh = masks.high;
+                });
+            } else {
+                const combo = decodedData.combos[plmnModalComboIndex];
+                combo.configMaskLow = masks.low;
+                combo.configMaskHigh = masks.high;
+            }
+            closePlmnModal();
+            generateTable(decodedData);
+        }
+
+        document.addEventListener("change", (event) => {
+            if (event.target &&
+                event.target.classList &&
+                event.target.classList.contains("plmn-option")) {
+                onPlmnOptionToggled();
+            }
+        });
+
 
         // ------------------------------------------------------------------
         // Tools modal (sort / delete all / validate)
