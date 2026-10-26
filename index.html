@@ -109,6 +109,28 @@
             font-size: 13px;
             padding: 1px 0;
         }
+        /* Target band picker (tool / Fix plmn mapping mode only) */
+        #plmnBandOptions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2px 12px;
+            max-height: 120px;
+            overflow-y: auto;
+            margin: 4px 0 6px;
+            padding: 4px 8px;
+            border: 1px solid light-dark(var(--grey), var(--grey));
+            background-color: light-dark(var(--offwhite), var(--grey));
+        }
+        #plmnBandOptions label {
+            display: inline-block;
+            white-space: nowrap;
+            font-size: 13px;
+            padding: 1px 0;
+        }
+        .plmn-band-title {
+            margin-top: 8px;
+            font-size: 13px;
+        }
         .plmn-values {
             font-family: monospace;
             font-size: 12px;
@@ -745,6 +767,16 @@
             <div class="plmn-values">
                 conf id 0-63: <span id="plmnCalculatedLow"></span><br>
                 conf id 64-95: <span id="plmnCalculatedHigh"></span>
+            </div>
+            <div id="plmnBandTargetSection" style="display: none;">
+                <div class="plmn-band-title">
+                    Target bands: <span id="plmnBandMatchCount"></span>
+                </div>
+                <div id="plmnBandOptions"></div>
+                <div style="margin-bottom: 6px;">
+                    <button type="button" onclick="setAllPlmnBands(true)">All bands</button>
+                    <button type="button" onclick="setAllPlmnBands(false)">No bands</button>
+                </div>
             </div>
             <label>
                 <input type="checkbox" id="plmnApplyAll">
@@ -1635,6 +1667,12 @@
         // The set of conf_ids enabled by ALL_PLMN_MASK, computed once.
         const ALL_PLMN_CONF_IDS = new Set();
 
+        // LTE bands offered as "target bands" in the Fix plmn mapping tool.
+        const LTE_TARGET_BANDS = [
+            1, 2, 3, 4, 5, 7, 8, 12, 13, 14, 17, 18, 19, 20, 21,
+            25, 26, 28, 29, 30, 32, 38, 39, 40, 41, 42, 46, 48, 66, 71,
+        ];
+
         // Decode the two protobuf masks into named conf_ids plus any bits
         // that fall outside LTE_CONF_ID_NAMES (raw ids 31/32/48/49/85+).
         function masksToConfIdInfo(lowMask, highMask) {
@@ -2081,6 +2119,7 @@
         // ------------------------------------------------------------------
 
         let plmnModalComboIndex = null;
+        let plmnModalToolMode = false;
 
         // comboIndex = null opens the picker in tool mode ("Fix plmn mapping"):
         // it defaults to all PLMNs and always applies to every combo.
@@ -2095,6 +2134,7 @@
             }
 
             const toolMode = comboIndex === null;
+            plmnModalToolMode = toolMode;
             const targetIndex = toolMode ? 0 : comboIndex;
             const combo = decodedData.combos[targetIndex];
             if (!combo) return;
@@ -2142,6 +2182,19 @@
             applyAllBox.checked = toolMode ? true : Boolean(options.applyAll);
             // Tool mode always targets every combo; row mode leaves the choice.
             applyAllBox.disabled = toolMode;
+
+            // Target band filter: only meaningful for the Fix plmn mapping
+            // tool, where Apply sprays the mapping across many combos.
+            const bandSection = document.getElementById("plmnBandTargetSection");
+            bandSection.style.display = toolMode ? "block" : "none";
+            if (toolMode) {
+                document.getElementById("plmnBandOptions").innerHTML =
+                    LTE_TARGET_BANDS.map((band) =>
+                        `<label><input type="checkbox" class="plmn-band-option" value="${band}"> B${band}</label>`
+                    ).join("");
+                updatePlmnBandMatchCount();
+            }
+
             updatePlmnPreview();
             document.getElementById("plmnModal").style.display = "block";
         }
@@ -2149,6 +2202,7 @@
         function closePlmnModal() {
             document.getElementById("plmnModal").style.display = "none";
             plmnModalComboIndex = null;
+            plmnModalToolMode = false;
         }
 
         // Selecting "All PLMNs" clears the individual checkboxes; picking any
@@ -2174,6 +2228,51 @@
                 selected.add(Number(option.dataset.confId));
             });
             return selected;
+        }
+
+        // Bands ticked in the target band picker (tool mode only).
+        function plmnModalSelectedBands() {
+            const bands = new Set();
+            document.querySelectorAll("#plmnBandOptions .plmn-band-option:checked").forEach((option) => {
+                bands.add(Number(option.value));
+            });
+            return bands;
+        }
+
+        // Combos that contain at least one of the selected target bands.
+        // An empty selection means "no band filter" (every combo).
+        function combosContainingBands(combos, bands) {
+            if (bands.size === 0) return combos;
+            return combos.filter((combo) =>
+                combo.components.some((component) => bands.has(Number(component.band)))
+            );
+        }
+
+        function plmnBandTargetCombos() {
+            if (!decodedData || !decodedData.combos) return [];
+            return combosContainingBands(decodedData.combos, plmnModalSelectedBands());
+        }
+
+        function updatePlmnBandMatchCount() {
+            if (!decodedData || !decodedData.combos) return;
+            const total = decodedData.combos.length;
+            const bands = plmnModalSelectedBands();
+            const label = document.getElementById("plmnBandMatchCount");
+            if (bands.size === 0) {
+                label.textContent = `all ${total} combos (no band filter)`;
+                return;
+            }
+            const count = plmnBandTargetCombos().length;
+            label.textContent =
+                `${count} of ${total} combos contain one of ` +
+                [...bands].map((band) => "B" + band).join(", ");
+        }
+
+        function setAllPlmnBands(checked) {
+            document.querySelectorAll("#plmnBandOptions .plmn-band-option").forEach((option) => {
+                option.checked = checked;
+            });
+            updatePlmnBandMatchCount();
         }
 
         // Live-computed mask values shown below the checkbox list.
@@ -2210,8 +2309,22 @@
             };
 
             if (applyAll) {
-                if (!confirm("Apply this conf_id mapping to all combos?")) return;
-                decodedData.combos.forEach(writeMasks);
+                // Tool mode can narrow the spray to combos containing the
+                // ticked bands; an empty filter means every combo.
+                const targets = plmnModalToolMode
+                    ? plmnBandTargetCombos()
+                    : decodedData.combos;
+                if (targets.length === 0) {
+                    // No combo matches the band filter: silently ignore.
+                    closePlmnModal();
+                    return;
+                }
+                const message = targets.length === decodedData.combos.length
+                    ? "Apply this conf_id mapping to all combos?"
+                    : `Apply this conf_id mapping to ${targets.length} of ` +
+                      `${decodedData.combos.length} combos (target bands)?`;
+                if (!confirm(message)) return;
+                targets.forEach(writeMasks);
             } else {
                 writeMasks(decodedData.combos[plmnModalComboIndex]);
             }
@@ -2224,6 +2337,10 @@
                 event.target.classList &&
                 event.target.classList.contains("plmn-option")) {
                 onPlmnOptionToggled();
+            } else if (event.target &&
+                event.target.classList &&
+                event.target.classList.contains("plmn-band-option")) {
+                updatePlmnBandMatchCount();
             }
         });
 
