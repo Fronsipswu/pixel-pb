@@ -1352,7 +1352,7 @@
                 group.combo.forEach((combo, localComboIndex) => {
                     let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
                         <div class="groupheader">
-                            <span>Combo: ${nrComboSummary(combo)}</span>
+                            <span>Combo: ${nrComboSummary(combo, true)}</span>
                             <span>bcsNr:</span>
                             <input type="text" name="bcsNr" value="${parseBcs(group.comboHeader.bcsNr)}" oninput="updateBcs(${realGroupIndex},this.value,'bcsNr')">
                             <span>bcsIntraENDC:</span>
@@ -1799,28 +1799,69 @@
             return LTE_CLASS_LETTERS[value & ~1] || "?";
         }
 
-        function nrComboSummary(combo) {
+        // Per-band display colours: the exact map from the qcom-band-menu
+        // app (BAND_COLORS in NetworkScreen.kt), keyed by band number.
+        // Only the combo summary in the editing rows is coloured with it;
+        // every other combo text stays plain.
+        const BAND_COLORS = {
+            1: 0xEE8700, 2: 0x3F70EE, 3: 0x81A83D, 4: 0xFF01FC, 5: 0xDFCA02, 6: 0xBF9309,
+            7: 0xCB0481, 8: 0xA96B2F, 9: 0x5FEE1D, 10: 0x077E1E, 11: 0x49CDF0, 12: 0x8B1CC3,
+            13: 0xCD6B95, 14: 0x0FBB67, 15: 0x510A3A, 16: 0x93590C, 17: 0xD5A8DE, 18: 0x17F8B0,
+            19: 0x594783, 20: 0x3DF7F0, 21: 0x476668, 22: 0x89B53A, 23: 0xCB040D, 24: 0x0D54DF,
+            25: 0x4FA3B1, 26: 0x91F283, 27: 0xD34156, 28: 0x1CAF8C, 29: 0x57E0FA, 30: 0x03B00D,
+            31: 0x45FFDF, 32: 0x9400BF, 33: 0xC99D84, 34: 0x0BED56, 35: 0x4D3C29, 36: 0x8F8BFB,
+            37: 0xD1DACD, 38: 0x798CED, 39: 0x557972, 40: 0x117FDC, 41: 0x439857, 42: 0x85E729,
+            43: 0xC736FC, 44: 0x0986CE, 45: 0x4BD5A0, 46: 0x0C00F2, 47: 0xCF7345, 48: 0x11C317,
+            49: 0x5312EA, 50: 0xFFE1FC, 51: 0x4131CF, 52: 0x8380A1, 53: 0xC5CF73, 54: 0x071F46,
+            55: 0x496E18, 56: 0x8BBDEA, 57: 0xCD0CBD, 58: 0x0F5C8F, 59: 0x51AB61, 60: 0xFD7A74,
+            61: 0x3FCA46, 62: 0x811919, 63: 0xC368EB, 64: 0x05B8BD, 65: 0x470790, 66: 0xD18799,
+            67: 0xCBA534, 68: 0x0DF506, 69: 0x4F44D9, 70: 0xFB13EC, 71: 0x3D63BE, 72: 0x7FB290,
+            73: 0xC10163, 74: 0x035135, 75: 0x45A007, 76: 0x87EFD9, 77: 0xC93EAC, 78: 0xDD0000,
+            79: 0x4DDD50, 80: 0xF9AC63, 81: 0x3BFC35, 82: 0x7D4B08, 83: 0xBF9ADA, 84: 0x01EAAC,
+            85: 0x43397F, 86: 0x858851, 87: 0xC7D723, 88: 0x0927F6, 89: 0x4B76C8, 90: 0xF745DB,
+            91: 0x3995AD, 92: 0x7BE47F, 93: 0xBD3352, 94: 0xFF8224, 95: 0x41D2F6, 96: 0x8321C9,
+            97: 0xC5709B, 98: 0x07C06D, 99: 0x490F40, 100: 0xDFC84B, 101: 0xFF5DC3, 102: 0x1FF33A,
+            103: 0x3F88B2, 104: 0x5F1D2A, 105: 0x7FB2A1, 106: 0x9F4719, 107: 0xBFDC90, 108: 0xDF7108,
+            109: 0xFF0680, 110: 0xBFD7C6, 125: 0x3FD097, 126: 0x5F650F, 127: 0x7FFA86, 250: 0x5FE099,
+            251: 0x7F7511, 252: 0x9F0A89, 253: 0xBF9F00, 254: 0xDF3478, 255: 0xFFC9EF, 256: 0x1F5F67,
+            257: 0xFF8B66, 258: 0xFF8B66, 259: 0x7F1ECE, 260: 0x3FEF14, 261: 0x5F848C, 262: 0x7F1904,
+            263: 0x9FAE7B
+        };
+
+        // The band name in its band colour, or the plain name when not
+        // colouring or the band has no colour in the map.
+        function bandLabelHtml(band, name, colored) {
+            if (!colored) return name;
+            const hex = BAND_COLORS[Number(band)];
+            if (hex === undefined) return name;
+            return `<span style="color:#${hex.toString(16).padStart(6, "0")}">${name}</span>`;
+        }
+
+        function nrComboSummary(combo, colored = false) {
             const part = (cc, field) => {
                 const cls = Number(cc[field]) || 0;
                 if (cls <= 0) return null;
                 const band = Number(cc.band) || 0;
-                const bandName = band > 10000 ? "n" + (band - 10000) : String(band);
+                const isNr = band > 10000;
+                const bandName = isNr ? "n" + (band - 10000) : String(band);
+                const label = bandLabelHtml(isNr ? band - 10000 : band, bandName, colored);
                 const letter = String.fromCharCode(64 + cls);
-                return letter === "A" ? bandName : bandName + letter;
+                return letter === "A" ? label : label + letter;
             };
             const dl = combo.cc.map((cc) => part(cc, "bwClassDL")).filter(Boolean);
             const ul = combo.cc.map((cc) => part(cc, "bwClassUL")).filter(Boolean);
             return `${dl.join("+") || "&mdash;"} (UL: ${ul.join("+") || "&mdash;"})`;
         }
 
-        function lteComboSummary(combo) {
+        function lteComboSummary(combo, colored = false) {
             const part = (component, field) => {
                 const value = Number(component[field]) || 0;
                 if (value === 0) return null;
                 const letter = lteClassLetter(value);
+                const label = bandLabelHtml(component.band, `${component.band}`, colored);
                 return letter === "A"
-                    ? `${component.band}`
-                    : `${component.band}${letter}`;
+                    ? label
+                    : `${label}${letter}`;
             };
             const dl = combo.components
                 .map((component) => part(component, "bwClassMimoDl"))
@@ -1869,7 +1910,7 @@
 
                 let innerTableHTML = `<table class="combo-table" style="width: 100%; border-collapse: collapse;">
                     <div class="groupheader">
-                        <span>Combo: ${lteComboSummary(combo)}</span>
+                        <span>Combo: ${lteComboSummary(combo, true)}</span>
                         <span>bcs:</span>
                         <input type="text" name="bcs" value="${parseBcs(combo.bcs)}" oninput="updateLteBcs(${comboIndex}, this.value)">
                     </div>`;
