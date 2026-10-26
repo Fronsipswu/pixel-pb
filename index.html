@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark" />
     <title>Pixel Uecapa pb Editor</title>
+    <!-- protobufjs' browser bundle does not include a uint64 implementation.
+         Load Long first so LTE conf_id masks are never rounded by Number. -->
+    <script src="https://cdn.jsdelivr.net/npm/long@5.2.3/umd/index.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/protobufjs/7.4.0/protobuf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
@@ -931,6 +934,19 @@
     </div>
 
     <script>
+        // The standalone protobufjs browser bundle leaves util.Long unset.
+        // Without this adapter, uint64 LTE PLMN masks above Number.MAX_SAFE_INTEGER
+        // are silently rounded while loading and the bad value is saved back out.
+        if (!protobuf.util.Long && window.Long) {
+            protobuf.util.Long = window.Long;
+            protobuf.configure();
+        }
+        if (!protobuf.util.Long) {
+            throw new Error(
+                "Exact uint64 support failed to load; refusing to edit LTE PLMN masks."
+            );
+        }
+
         // Proto definition
         const protoDefinition = `
             syntax = "proto3";
@@ -1025,23 +1041,16 @@
         (function verifyUint64Support() {
             const probes = ["0", "9007199254740991", "9007199254740992", "18445899642336968703", "18446744073709551615"];
             const type = lteRoot.lookupType("LteCombo");
-            let failures = 0;
             probes.forEach((value) => {
-                try {
-                    const bytes = type.encode(type.fromObject({ configMaskLow: value, configMaskHigh: 0 })).finish();
-                    const back = type.toObject(type.decode(bytes), { defaults: true, longs: String });
-                    if (back.configMaskLow !== value) {
-                        failures++;
-                        console.error(`uint64 precision lost for ${value} -> ${back.configMaskLow}`);
-                    }
-                } catch (error) {
-                    failures++;
-                    console.error("uint64 self-test failed:", error);
+                const bytes = type.encode(type.fromObject({ configMaskLow: value, configMaskHigh: 0 })).finish();
+                const back = type.toObject(type.decode(bytes), { defaults: true, longs: String });
+                if (back.configMaskLow !== value) {
+                    throw new Error(
+                        `uint64 precision lost for ${value} -> ${back.configMaskLow}`
+                    );
                 }
             });
-            console.log(failures === 0
-                ? "uint64 self-test passed."
-                : `uint64 self-test: ${failures} probe(s) failed.`);
+            console.log("uint64 self-test passed.");
         })();
 
         // AP PLMN mapping proto definition
