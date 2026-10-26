@@ -115,8 +115,8 @@
             margin: 8px 0;
             word-break: break-all;
         }
-        .plmn-warning {
-            color: light-dark(var(--darkred), var(--lightred));
+        .plmn-note {
+            color: light-dark(#666, #aaa);
             font-size: 12px;
         }
         /* Alternate combo rows: subtle blue tint vs the default grey.
@@ -741,7 +741,7 @@
                 All PLMNs (conf ids 0-84, same as Fix plmn mapping)
             </label>
             <div id="plmnOptions"></div>
-            <div class="plmn-warning" id="plmnUnnamedWarning" style="display: none;"></div>
+            <div class="plmn-note" id="plmnUnnamedNote" style="display: none;"></div>
             <div class="plmn-values">
                 conf id 0-63: <span id="plmnCalculatedLow"></span><br>
                 conf id 64-95: <span id="plmnCalculatedHigh"></span>
@@ -1655,10 +1655,16 @@
             return { named, unnamed };
         }
 
-        // Convert a set of conf_ids back into the two mask strings.
-        function confIdInfoToMasks(namedConfIds) {
-            let low = 0n;
-            let high = 0n;
+        // Convert a set of conf_ids back into the two mask fields. Unnamed
+        // conf bits can be passed in via the extras so they survive the
+        // round trip untouched.
+        function confIdInfoToMasks(
+            namedConfIds,
+            unnamedLowExtra = 0n,
+            unnamedHighExtra = 0n,
+        ) {
+            let low = unnamedLowExtra;
+            let high = unnamedHighExtra;
             namedConfIds.forEach((confId) => {
                 if (confId < 64) {
                     low |= 1n << BigInt(confId);
@@ -1677,24 +1683,39 @@
             info.named.forEach((confId) => ALL_PLMN_CONF_IDS.add(confId));
         })();
 
-        // True when a combo's masks enable every named PLMN group and nothing
-        // else (i.e. the "all PLMNs" default applied by Fix plmn mapping).
+        // True when a combo's masks enable every named PLMN group. Unnamed
+        // conf bits are ignored here and left untouched when editing.
         function isAllPlmnMask(lowMask, highMask) {
             const info = masksToConfIdInfo(lowMask, highMask);
-            if (info.unnamed.length > 0) return false;
             if (info.named.length !== ALL_PLMN_CONF_IDS.size) return false;
             return info.named.every((confId) => ALL_PLMN_CONF_IDS.has(confId));
         }
 
+        // Mask containing only the bits that fall outside
+        // LTE_CONF_ID_NAMES; used to preserve them when re-encoding.
+        function unnamedConfBitMasks(lowMask, highMask) {
+            const info = masksToConfIdInfo(lowMask, highMask);
+            let low = 0n;
+            let high = 0n;
+            info.unnamed.forEach((confId) => {
+                if (confId < 64) {
+                    low |= 1n << BigInt(confId);
+                } else {
+                    high |= 1n << BigInt(confId - 64);
+                }
+            });
+            return { low, high };
+        }
+
         // Short human-readable label for the PLMN selection shown per row:
-        // "All PLMNs", "Default + VZW + TMO", or "Custom (N groups)".
+        // "All PLMNs" or the list of selected names. Unnamed conf bits are
+        // ignored here (they are preserved untouched when editing).
         function plmnSelectionLabel(lowMask, highMask) {
             if (isAllPlmnMask(lowMask, highMask)) return "All PLMNs";
             const info = masksToConfIdInfo(lowMask, highMask);
-            if (info.named.length === 0) return "Custom (no PLMN groups)";
-            if (info.unnamed.length > 0) return "Custom (unknown conf bits)";
-            const maxNames = 4;
             const names = info.named.map((confId) => LTE_CONF_ID_NAMES[confId]);
+            if (names.length === 0) return "None";
+            const maxNames = 4;
             if (names.length <= maxNames) return names.join(" + ");
             return names.slice(0, maxNames).join(" + ") + ` +${names.length - maxNames}`;
         }
@@ -2100,16 +2121,16 @@
             });
             document.getElementById("plmnOptions").innerHTML = optionsHTML;
 
-            const warning = document.getElementById("plmnUnnamedWarning");
+            const note = document.getElementById("plmnUnnamedNote");
             if (info.unnamed.length > 0) {
-                warning.textContent =
-                    "Warning: this combo has conf bits without a known PLMN " +
-                    `name (ids ${info.unnamed.join(", ")}). Applying the ` +
-                    "selection below will drop them.";
-                warning.style.display = "block";
+                note.textContent =
+                    "Note: this combo also has unnamed conf bits (ids " +
+                    info.unnamed.join(", ") + "). They are ignored here " +
+                    "and left unchanged by Apply.";
+                note.style.display = "block";
             } else {
-                warning.textContent = "";
-                warning.style.display = "none";
+                note.textContent = "";
+                note.style.display = "none";
             }
 
             document.getElementById("plmnApplyAll").checked = false;
@@ -2161,20 +2182,30 @@
             if (plmnModalComboIndex === null) return;
             const applyAll = document.getElementById("plmnApplyAll").checked;
             const allPlmn = document.getElementById("plmnAll").checked;
-            const masks = allPlmn
-                ? { low: ALL_PLMN_MASK_LOW, high: Number(ALL_PLMN_MASK_HIGH) }
-                : confIdInfoToMasks(plmnModalSelectedConfIds());
+
+            // Unnamed conf bits are never shown in the picker; whatever bits
+            // each target combo already has are kept untouched on apply.
+            const writeMasks = (combo) => {
+                const unnamed = unnamedConfBitMasks(combo.configMaskLow, combo.configMaskHigh);
+                if (allPlmn) {
+                    combo.configMaskLow = (BigInt(ALL_PLMN_MASK_LOW) | unnamed.low).toString();
+                    combo.configMaskHigh = Number(BigInt(ALL_PLMN_MASK_HIGH) | unnamed.high);
+                    return;
+                }
+                const masks = confIdInfoToMasks(
+                    plmnModalSelectedConfIds(),
+                    unnamed.low,
+                    unnamed.high,
+                );
+                combo.configMaskLow = masks.low;
+                combo.configMaskHigh = masks.high;
+            };
 
             if (applyAll) {
                 if (!confirm("Apply this conf_id mapping to all combos?")) return;
-                decodedData.combos.forEach((combo) => {
-                    combo.configMaskLow = masks.low;
-                    combo.configMaskHigh = masks.high;
-                });
+                decodedData.combos.forEach(writeMasks);
             } else {
-                const combo = decodedData.combos[plmnModalComboIndex];
-                combo.configMaskLow = masks.low;
-                combo.configMaskHigh = masks.high;
+                writeMasks(decodedData.combos[plmnModalComboIndex]);
             }
             closePlmnModal();
             generateTable(decodedData);
