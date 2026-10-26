@@ -715,7 +715,7 @@
                 <label for="filenameInput">Filename:</label>
                 <input type="text" id="filenameInput" value="" onchange="updateFilename(this.value)">
                 <button title="Download the compiled binarypb file" onclick="dlProtobuf()">↓ .binarypb</button>
-                <button title="Download the generated Magisk zip"onclick="createZipWithSubdirectories()">↓ .zip</button>
+                <button title="Download the generated Magisk zip" onclick="openZipNameModal()">↓ .zip</button>
             </div>
             <button id="clearLocalStorageBtn" title="Clear the stored session" onclick="clearLocalStorageAndReload()">Clear session</button>
 
@@ -784,6 +784,19 @@
             </label>
             <button class="modalbtn" onclick="closePlmnModal()">Cancel</button>
             <button class="modalbtn" onclick="applyPlmnSelection()">Apply</button>
+        </div>
+    </div>
+
+    <!-- Zip download name modal -->
+    <div id="zipNameModal" class="modal">
+        <div class="modal-content" style="width: 40%; min-width: 300px;">
+            <h3>Name the module zip</h3>
+            <input type="text" id="zipNameInput" style="width: 100%; box-sizing: border-box;"
+                oninput="updateZipNamePreview()"
+                onkeydown="if(event.key==='Enter') confirmZipName();">
+            <div class="plmn-note" style="margin-top: 8px;">Saved as <span id="zipNamePreview"></span>.zip</div>
+            <button class="modalbtn" onclick="closeZipNameModal()">Cancel</button>
+            <button class="modalbtn" onclick="confirmZipName()">Download</button>
         </div>
     </div>
 
@@ -5085,6 +5098,39 @@
             originalFilename = newName;
         }
 
+        // Default zip name: the name the file was uploaded under (the zip's
+        // own name for a zip session, otherwise the .binarypb's name).
+        function defaultZipName() {
+            return zipPickerFiles.length > 0 ? originalZipName : originalFilename;
+        }
+
+        function openZipNameModal() {
+            if (!decodedData) return alert("No data to recompile!");
+            const input = document.getElementById("zipNameInput");
+            input.value = defaultZipName();
+            updateZipNamePreview();
+            document.getElementById("zipNameModal").style.display = "block";
+            input.focus();
+            input.select();
+        }
+
+        function closeZipNameModal() {
+            document.getElementById("zipNameModal").style.display = "none";
+        }
+
+        function updateZipNamePreview() {
+            const value = document.getElementById("zipNameInput").value.trim().replace(/\.zip$/i, "");
+            document.getElementById("zipNamePreview").textContent = value || "module";
+        }
+
+        function confirmZipName() {
+            const input = document.getElementById("zipNameInput");
+            // Fall back to the uploaded name if the box was cleared.
+            const name = input.value.trim() || defaultZipName();
+            closeZipNameModal();
+            createZipWithSubdirectories(name);
+        }
+
         function getFormattedDate() {
             const now = new Date();
             return now.getFullYear() + '.' +
@@ -5094,12 +5140,16 @@
                 String(now.getMinutes()).padStart(2, '0');
         }
         
-        async function createZipWithSubdirectories() {
+        async function createZipWithSubdirectories(zipName) {
             // Note: export intentionally builds a FRESH Magisk scaffold
             // (customize.sh / module.prop / update-binary) and preserves only
             // the .binarypb files — original non-binarypb zip contents are not
             // carried over. The new module.prop reflects the edited filename.
             let curr_time = getFormattedDate();
+            // The chosen name becomes the file name as-is; tolerate a typed
+            // ".zip" so it never saves as "name.zip.zip".
+            zipName = String(zipName == null ? "" : zipName).trim();
+            zipName = zipName.replace(/\.zip$/i, "").trim() || defaultZipName() || "module";
             // Create a new ZIP instance
             const zip = new JSZip();
             
@@ -5164,9 +5214,7 @@ description=Replaces ${originalFilename}. Generated with fronsipswu.github.io/pi
                 const url = URL.createObjectURL(content);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = zipPickerFiles.length > 0
-                    ? `mod_${originalZipName}.zip`
-                    : `${originalFilename}-${curr_time}.zip`;
+                link.download = `${zipName}.zip`;
                 
                 // Trigger download
                 document.body.appendChild(link);
