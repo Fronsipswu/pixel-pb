@@ -723,7 +723,7 @@
             <h3>Tools</h3>
             <div id="toolsOptions">
                 <button class="zipPickBtn" id="toolSortBtn" onclick="toolSortCombos()">Sort Combos</button>
-                <button class="zipPickBtn" id="toolFixPlmnBtn" title="Make all LTE combos available for all PLMNs (conf id 0-63 = 18445899642336968703, conf id 64-95 = 2097151)" onclick="toolFixPlmnMapping()" style="display: none;">Fix plmn mapping</button>
+                <button class="zipPickBtn" id="toolFixPlmnBtn" title="Choose conf_id PLMNs (defaults to all PLMNs) and apply them to every LTE combo" onclick="toolFixPlmnMapping()" style="display: none;">Fix plmn mapping</button>
                 <button class="zipPickBtn" onclick="toolDeleteAllCombos()">Delete all combos</button>
                 <button class="zipPickBtn" onclick="toolValidate()">Validate</button>
             </div>
@@ -2069,21 +2069,11 @@
             generateTable(decodedData);
         }
 
-        function fixLtePlmnMapping() {
-            if (currentMode !== "lte") {
-                alert("PLMN mapping fix only applies to LTE binarypbs.");
-                return;
-            }
-            decodedData.combos.forEach((combo) => {
-                combo.configMaskLow = ALL_PLMN_MASK_LOW;      // conf id 0-63 (all named)
-                combo.configMaskHigh = Number(ALL_PLMN_MASK_HIGH); // conf id 64-84
-            });
-            generateTable(decodedData);
-        }
-
         function toolFixPlmnMapping() {
             closeToolsModal();
-            fixLtePlmnMapping();
+            // Same picker as the per-row PLMN cell, opened in "all combos"
+            // mode and pre-set to all PLMNs (the old one-tap behaviour).
+            openPlmnModal(null, { applyAll: true, defaultAll: true });
         }
 
         // ------------------------------------------------------------------
@@ -2092,17 +2082,32 @@
 
         let plmnModalComboIndex = null;
 
-        function openPlmnModal(comboIndex) {
-            if (currentMode !== "lte") return;
-            if (!decodedData || !decodedData.combos || !decodedData.combos[comboIndex]) return;
-            plmnModalComboIndex = comboIndex;
+        // comboIndex = null opens the picker in tool mode ("Fix plmn mapping"):
+        // it defaults to all PLMNs and always applies to every combo.
+        function openPlmnModal(comboIndex = null, options = {}) {
+            if (currentMode !== "lte") {
+                alert("PLMN mapping only applies to LTE binarypbs.");
+                return;
+            }
+            if (!decodedData || !decodedData.combos || decodedData.combos.length === 0) {
+                alert("No LTE combos to edit.");
+                return;
+            }
 
-            const combo = decodedData.combos[comboIndex];
+            const toolMode = comboIndex === null;
+            const targetIndex = toolMode ? 0 : comboIndex;
+            const combo = decodedData.combos[targetIndex];
+            if (!combo) return;
+            plmnModalComboIndex = targetIndex;
+
             const info = masksToConfIdInfo(combo.configMaskLow, combo.configMaskHigh);
-            const allPlmn = isAllPlmnMask(combo.configMaskLow, combo.configMaskHigh);
+            const allPlmn = options.defaultAll
+                ? true
+                : isAllPlmnMask(combo.configMaskLow, combo.configMaskHigh);
 
-            document.getElementById("plmnModalTitle").textContent =
-                `Select conf_id PLMNs (combo ${comboIndex})`;
+            document.getElementById("plmnModalTitle").textContent = toolMode
+                ? "Select conf_id PLMNs (all combos)"
+                : `Select conf_id PLMNs (combo ${targetIndex})`;
             document.getElementById("plmnAll").checked = allPlmn;
 
             // One checkbox per named conf_id. Default (id 0) is always
@@ -2122,7 +2127,7 @@
             document.getElementById("plmnOptions").innerHTML = optionsHTML;
 
             const note = document.getElementById("plmnUnnamedNote");
-            if (info.unnamed.length > 0) {
+            if (!toolMode && info.unnamed.length > 0) {
                 note.textContent =
                     "Note: this combo also has unnamed conf bits (ids " +
                     info.unnamed.join(", ") + "). They are ignored here " +
@@ -2133,7 +2138,10 @@
                 note.style.display = "none";
             }
 
-            document.getElementById("plmnApplyAll").checked = false;
+            const applyAllBox = document.getElementById("plmnApplyAll");
+            applyAllBox.checked = toolMode ? true : Boolean(options.applyAll);
+            // Tool mode always targets every combo; row mode leaves the choice.
+            applyAllBox.disabled = toolMode;
             updatePlmnPreview();
             document.getElementById("plmnModal").style.display = "block";
         }
